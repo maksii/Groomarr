@@ -50,6 +50,72 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Groomarr service")
 
 
+def _log_payload_diagnostics(source: str, payload: dict):
+    """Log diagnostic information about a webhook payload.
+
+    This helps debug issues with malformed or unexpected payloads.
+
+    Args:
+        source: Source application (radarr/sonarr)
+        payload: Raw JSON payload dictionary
+    """
+    # List expected fields based on source
+    if source == "radarr":
+        expected_fields = [
+            "eventType",
+            "movie",
+            "release",
+            "downloadId",
+            "downloadClient",
+            "downloadClientType",
+        ]
+    else:  # sonarr
+        expected_fields = [
+            "eventType",
+            "series",
+            "episodes",
+            "release",
+            "downloadClient",
+            "downloadClientType",
+        ]
+
+    # Check which fields are present/missing
+    present = [f for f in expected_fields if f in payload]
+    missing = [f for f in expected_fields if f not in payload]
+
+    logger.debug(f"[{source}] Payload keys received: {list(payload.keys())}")
+
+    if missing:
+        logger.info(f"[{source}] Missing expected fields: {', '.join(missing)}")
+    if present:
+        logger.debug(f"[{source}] Present expected fields: {', '.join(present)}")
+
+    # Log specific useful info if available
+    if "eventType" in payload:
+        logger.debug(f"[{source}] Event type: {payload['eventType']}")
+
+    if "movie" in payload and isinstance(payload["movie"], dict):
+        movie = payload["movie"]
+        logger.debug(f"[{source}] Movie: {movie.get('title', 'unknown')}")
+
+    if "series" in payload and isinstance(payload["series"], dict):
+        series = payload["series"]
+        logger.debug(f"[{source}] Series: {series.get('title', 'unknown')}")
+
+    if "release" in payload and isinstance(payload["release"], dict):
+        release = payload["release"]
+        release_title = release.get("releaseTitle") or release.get("title", "unknown")
+        logger.debug(f"[{source}] Release: {release_title[:80]}...")
+
+    if "downloadId" in payload:
+        did = payload["downloadId"]
+        hash_preview = did[:8] if did else "empty"
+        logger.debug(f"[{source}] Download ID: {hash_preview}...")
+
+    if "downloadClientType" in payload:
+        logger.debug(f"[{source}] Download client type: {payload['downloadClientType']}")
+
+
 def _log_config_state():
     """Log the current config file state and active rules."""
     from pathlib import Path
@@ -259,13 +325,39 @@ async def manual_rename(request: ManualRenameRequest):
 
 
 @app.post("/webhook/radarr", response_model=WebhookResponse)
-async def radarr_webhook(payload: RadarrWebhook, background_tasks: BackgroundTasks):
+async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
     """Handle Radarr webhook for Grab events.
 
     Configure in Radarr: Settings -> Connect -> Webhook
     - URL: http://groomarr:8000/webhook/radarr
     - Events: On Grab only
     """
+    # Parse raw JSON first to handle test events before Pydantic validation
+    try:
+        raw_payload = await request.json()
+    except Exception as e:
+        logger.error(f"[radarr] Failed to parse JSON payload: {e}")
+        return WebhookResponse(status="error", reason="Invalid JSON payload")
+
+    event_type = raw_payload.get("eventType", "unknown")
+
+    # Handle test events - Radarr sends minimal payload for test
+    if event_type == "Test":
+        logger.info("[radarr] Received test webhook - connection successful")
+        _log_payload_diagnostics("radarr", raw_payload)
+        return WebhookResponse(status="ok", reason="Test webhook received successfully")
+
+    # For non-test events, validate with Pydantic model
+    try:
+        payload = RadarrWebhook(**raw_payload)
+    except Exception as e:
+        logger.error(f"[radarr] Payload validation failed: {e}")
+        _log_payload_diagnostics("radarr", raw_payload)
+        return JSONResponse(
+            status_code=422,
+            content={"status": "error", "reason": f"Invalid payload: {str(e)[:200]}"},
+        )
+
     hash_short = payload.downloadId[:8] if payload.downloadId else "unknown"
     movie_title = payload.movie.title
 
@@ -275,6 +367,7 @@ async def radarr_webhook(payload: RadarrWebhook, background_tasks: BackgroundTas
 
     # Check event type
     if payload.eventType != "Grab":
+        logger.info(f"[radarr] Skipping event type '{payload.eventType}' (not Grab)")
         return WebhookResponse(
             status="skipped",
             reason=f"event type '{payload.eventType}' not Grab",
@@ -283,6 +376,9 @@ async def radarr_webhook(payload: RadarrWebhook, background_tasks: BackgroundTas
 
     # Check download client type
     if payload.downloadClientType != "qBittorrent":
+        logger.info(
+            f"[radarr] Skipping download client '{payload.downloadClientType}' (not qBittorrent)"
+        )
         return WebhookResponse(
             status="skipped",
             reason=f"download client '{payload.downloadClientType}' not qBittorrent",
@@ -316,13 +412,39 @@ async def radarr_webhook(payload: RadarrWebhook, background_tasks: BackgroundTas
 
 
 @app.post("/webhook/sonarr", response_model=WebhookResponse)
-async def sonarr_webhook(payload: SonarrWebhook, background_tasks: BackgroundTasks):
+async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
     """Handle Sonarr webhook for Grab events.
 
     Configure in Sonarr: Settings -> Connect -> Webhook
     - URL: http://groomarr:8000/webhook/sonarr
     - Events: On Grab only
     """
+    # Parse raw JSON first to handle test events before Pydantic validation
+    try:
+        raw_payload = await request.json()
+    except Exception as e:
+        logger.error(f"[sonarr] Failed to parse JSON payload: {e}")
+        return WebhookResponse(status="error", reason="Invalid JSON payload")
+
+    event_type = raw_payload.get("eventType", "unknown")
+
+    # Handle test events - Sonarr sends minimal payload for test
+    if event_type == "Test":
+        logger.info("[sonarr] Received test webhook - connection successful")
+        _log_payload_diagnostics("sonarr", raw_payload)
+        return WebhookResponse(status="ok", reason="Test webhook received successfully")
+
+    # For non-test events, validate with Pydantic model
+    try:
+        payload = SonarrWebhook(**raw_payload)
+    except Exception as e:
+        logger.error(f"[sonarr] Payload validation failed: {e}")
+        _log_payload_diagnostics("sonarr", raw_payload)
+        return JSONResponse(
+            status_code=422,
+            content={"status": "error", "reason": f"Invalid payload: {str(e)[:200]}"},
+        )
+
     download_id = payload.get_download_id()
     hash_short = download_id[:8] if download_id else "unknown"
     series_title = payload.series.title
@@ -343,6 +465,7 @@ async def sonarr_webhook(payload: SonarrWebhook, background_tasks: BackgroundTas
 
     # Check event type
     if payload.eventType != "Grab":
+        logger.info(f"[sonarr] Skipping event type '{payload.eventType}' (not Grab)")
         return WebhookResponse(
             status="skipped",
             reason=f"event type '{payload.eventType}' not Grab",
@@ -351,6 +474,9 @@ async def sonarr_webhook(payload: SonarrWebhook, background_tasks: BackgroundTas
 
     # Check download client type
     if payload.downloadClientType != "qBittorrent":
+        logger.info(
+            f"[sonarr] Skipping download client '{payload.downloadClientType}' (not qBittorrent)"
+        )
         return WebhookResponse(
             status="skipped",
             reason=f"download client '{payload.downloadClientType}' not qBittorrent",
@@ -359,6 +485,7 @@ async def sonarr_webhook(payload: SonarrWebhook, background_tasks: BackgroundTas
 
     # Check we have download ID
     if not download_id:
+        logger.warning("[sonarr] No downloadId found in payload")
         return WebhookResponse(
             status="skipped",
             reason="no downloadId in payload",
