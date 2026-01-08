@@ -11,12 +11,58 @@ from src.config import RenameRules
 from src.rename import (
     apply_rename_rules,
     sanitize_filename,
+    strip_media_extension,
     matches_any,
     extract_episode_identifier,
     build_episode_identifier,
     insert_episode_into_name,
     build_new_file_path,
 )
+
+
+class TestStripMediaExtension:
+    """Test stripping media file extensions from names."""
+
+    def test_strips_mkv_extension(self):
+        assert strip_media_extension('Movie.2024.1080p.mkv') == 'Movie.2024.1080p'
+
+    def test_strips_mp4_extension(self):
+        assert strip_media_extension('Movie.2024.1080p.mp4') == 'Movie.2024.1080p'
+
+    def test_strips_avi_extension(self):
+        assert strip_media_extension('Movie.2024.1080p.avi') == 'Movie.2024.1080p'
+
+    def test_strips_mov_extension(self):
+        assert strip_media_extension('Movie.2024.1080p.mov') == 'Movie.2024.1080p'
+
+    def test_strips_ts_extension(self):
+        assert strip_media_extension('Movie.2024.1080p.ts') == 'Movie.2024.1080p'
+
+    def test_strips_m2ts_extension(self):
+        assert strip_media_extension('Movie.2024.1080p.m2ts') == 'Movie.2024.1080p'
+
+    def test_case_insensitive_uppercase(self):
+        assert strip_media_extension('Movie.2024.1080p.MKV') == 'Movie.2024.1080p'
+
+    def test_case_insensitive_mixed(self):
+        assert strip_media_extension('Movie.2024.1080p.Mkv') == 'Movie.2024.1080p'
+
+    def test_no_extension_unchanged(self):
+        assert strip_media_extension('Movie.2024.1080p') == 'Movie.2024.1080p'
+
+    def test_non_media_extension_unchanged(self):
+        """Non-media extensions should not be stripped."""
+        assert strip_media_extension('Movie.2024.1080p.txt') == 'Movie.2024.1080p.txt'
+        assert strip_media_extension('Movie.2024.1080p.nfo') == 'Movie.2024.1080p.nfo'
+        assert strip_media_extension('Movie.2024.1080p.srt') == 'Movie.2024.1080p.srt'
+
+    def test_release_group_not_stripped(self):
+        """Release groups that look like extensions should not be stripped."""
+        # Groups like -MKV or .MKV as group name shouldn't be affected if not at end
+        assert strip_media_extension('Movie.2024.MKV-Group') == 'Movie.2024.MKV-Group'
+
+    def test_webm_extension(self):
+        assert strip_media_extension('Video.2024.1080p.webm') == 'Video.2024.1080p'
 
 
 class TestSanitizeFilename:
@@ -139,6 +185,83 @@ class TestRenameRulesFromSampleData:
         result = apply_rename_rules(original, rules)
         
         assert result == 'Movie Name 2024 1080p HEVC x265'
+
+
+class TestReleaseNameWithExtension:
+    """Test handling of release names that include file extensions.
+    
+    This handles the case when users configure Sonarr/Radarr to use
+    filenames instead of release names, resulting in extensions being
+    included in the release title.
+    """
+
+    def test_release_with_mkv_extension(self):
+        """Release title with .mkv extension should have it stripped."""
+        rules = RenameRules()
+        original = 'Movie.2024.1080p.WEB-DL.x264-Group.mkv'
+        result = apply_rename_rules(original, rules)
+        
+        assert not result.endswith('.mkv')
+        assert result == 'Movie.2024.1080p.WEB-DL.x264-Group'
+
+    def test_release_with_mp4_extension(self):
+        """Release title with .mp4 extension should have it stripped."""
+        rules = RenameRules()
+        original = 'Movie.2024.1080p.WEB-DL.x264-Group.mp4'
+        result = apply_rename_rules(original, rules)
+        
+        assert not result.endswith('.mp4')
+        assert result == 'Movie.2024.1080p.WEB-DL.x264-Group'
+
+    def test_release_with_extension_and_rules(self):
+        """Extension stripping works with other rename rules."""
+        rules = RenameRules()
+        rules.replace_patterns = {r'\.': ' ', r'\s+': ' '}
+        
+        original = 'Movie.2024.1080p.WEB-DL.mkv'
+        result = apply_rename_rules(original, rules)
+        
+        assert not result.endswith('.mkv')
+        assert result == 'Movie 2024 1080p WEB-DL'
+
+    def test_release_with_uppercase_extension(self):
+        """Uppercase extensions should also be stripped."""
+        rules = RenameRules()
+        original = 'Movie.2024.1080p.WEB-DL.x264-Group.MKV'
+        result = apply_rename_rules(original, rules)
+        
+        assert not result.upper().endswith('.MKV')
+        assert result == 'Movie.2024.1080p.WEB-DL.x264-Group'
+
+    def test_sonarr_single_file_scenario(self):
+        """Test Sonarr scenario where single file is grabbed by filename.
+        
+        When user configures Sonarr to grab by filename instead of release name,
+        the release title may include the extension.
+        """
+        rules = RenameRules()
+        rules.replace_patterns = {r'\.': ' ', r'\s+': ' '}
+        
+        # Simulates: User grabs "Series.S01E05.1080p.WEB.mkv" as filename
+        original = 'Series.S01E05.1080p.WEB.mkv'
+        result = apply_rename_rules(original, rules)
+        
+        assert not result.endswith('.mkv')
+        assert result == 'Series S01E05 1080p WEB'
+
+    def test_no_duplicate_extension_in_file_path(self):
+        """Ensure no duplicate extension when building file path."""
+        # Scenario: Release title has extension, we rename file
+        old_path = "SeriesFolder/Series.S01E05.1080p.WEB.mkv"
+        new_name = "Series S01 1080p WEB"  # Already processed (no extension)
+        root_folder = "SeriesFolder"
+        
+        result = build_new_file_path(old_path, new_name, root_folder)
+        
+        # Should have exactly one .mkv extension
+        assert result.endswith('.mkv')
+        assert not result.endswith('.mkv.mkv')
+        assert result.count('.mkv') == 1
 
 
 class TestExtractEpisodeIdentifier:

@@ -110,6 +110,32 @@ def should_process(
 # =============================================================================
 
 
+def strip_media_extension(name: str) -> str:
+    """Remove common video/media file extensions from a name.
+
+    This handles the case when users configure Sonarr/Radarr to use filenames
+    instead of release names, which may include file extensions.
+
+    Args:
+        name: Name that may contain a file extension
+
+    Returns:
+        Name with media extension stripped (if present)
+    """
+    # Common video/media file extensions (case-insensitive)
+    media_extensions = (
+        ".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm",
+        ".m4v", ".mpeg", ".mpg", ".ts", ".m2ts", ".vob", ".divx",
+        ".xvid", ".3gp", ".ogv", ".rm", ".rmvb", ".asf",
+    )
+
+    name_lower = name.lower()
+    for ext in media_extensions:
+        if name_lower.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+
 def sanitize_filename(name: str) -> str:
     """Remove/replace invalid filesystem characters.
 
@@ -147,13 +173,17 @@ def apply_rename_rules(original_name: str, rules: RenameRules) -> str:
     """
     name = original_name
 
-    # 1. Check skip patterns first
+    # 1. Strip media extension early (handles filename-based release titles)
+    # This must happen before replace patterns to avoid ".mkv" becoming " mkv"
+    name = strip_media_extension(name)
+
+    # 2. Check skip patterns
     for pattern in rules.skip_title_patterns:
         if re.search(pattern, name, re.IGNORECASE):
             logger.debug(f"Skipping rename due to skip pattern: {pattern}")
-            return original_name
+            return strip_media_extension(original_name)
 
-    # 2. Remove patterns
+    # 3. Remove patterns
     for pattern in rules.remove_patterns:
         try:
             name = re.sub(pattern, "", name)
