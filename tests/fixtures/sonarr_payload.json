@@ -24,10 +24,10 @@
     "releaseGroup": "GroupY",
     "size": 1573741824,
     "indexer": "TrackerB (API) (Prowlarr)",
-    "downloadId": "1234567890ABCDEF1234567890ABCDEF12345678",
     "customFormats": ["1080p", "WEB-DL"],
     "customFormatScore": 500
   },
+  "downloadId": "1234567890ABCDEF1234567890ABCDEF12345678",
   "downloadClient": "tv_qBit",
   "downloadClientType": "qBittorrent",
   "instanceName": "Sonarr"

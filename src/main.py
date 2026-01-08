@@ -75,6 +75,7 @@ def _log_payload_diagnostics(source: str, payload: dict):
             "series",
             "episodes",
             "release",
+            "downloadId",  # Sonarr v4+ puts this at top level
             "downloadClient",
             "downloadClientType",
         ]

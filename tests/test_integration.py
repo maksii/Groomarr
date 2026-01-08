@@ -223,7 +223,7 @@ class TestSonarrWebhook:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "queued"
-        assert data["torrent_hash"] == sonarr_payload["release"]["downloadId"]
+        assert data["torrent_hash"] == sonarr_payload["downloadId"]
 
     @pytest.mark.asyncio
     async def test_non_grab_event_skipped(self, async_client, sonarr_payload):
@@ -252,6 +252,8 @@ class TestSonarrWebhook:
     @pytest.mark.asyncio
     async def test_missing_download_id_skipped(self, async_client, sonarr_payload):
         """Missing downloadId should be skipped."""
+        # Remove downloadId from both top-level and release (Sonarr v4 uses top-level)
+        sonarr_payload.pop("downloadId", None)
         sonarr_payload["release"]["downloadId"] = None
         
         response = await async_client.post("/webhook/sonarr", json=sonarr_payload)

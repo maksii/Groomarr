@@ -102,12 +102,18 @@ class SonarrWebhook(BaseModel):
     release: SonarrRelease
     downloadClient: Optional[str] = None
     downloadClientType: Optional[str] = None
+    downloadId: Optional[str] = None  # Sonarr v4+ puts downloadId at top level
     instanceName: Optional[str] = None
     applicationUrl: Optional[str] = None
 
     def get_download_id(self) -> Optional[str]:
-        """Get download ID from release (Sonarr stores it differently)."""
-        return self.release.downloadId
+        """Get download ID from payload.
+
+        Sonarr v4+ puts downloadId at the top level (like Radarr).
+        Older versions may have it inside release object.
+        Check both locations for compatibility.
+        """
+        return self.downloadId or self.release.downloadId
 
     def get_release_title(self) -> str:
         """Get release title."""
