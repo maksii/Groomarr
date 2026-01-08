@@ -177,6 +177,118 @@ def apply_rename_rules(original_name: str, rules: RenameRules) -> str:
 
 
 # =============================================================================
+# Episode Identifier Handling
+# =============================================================================
+
+# Pattern to match episode identifiers: S01E01, S01 E01, S01EP01, etc.
+# Captures: season number, optional space, episode marker (E or EP), episode number
+EPISODE_PATTERN = re.compile(
+    r"S(\d+)\s*(E(?:P)?)\s*(\d+)",
+    re.IGNORECASE
+)
+
+# Pattern to match season-only identifier: S01, S02, etc.
+SEASON_ONLY_PATTERN = re.compile(
+    r"S(\d+)(?!\s*E)",
+    re.IGNORECASE
+)
+
+
+def extract_episode_identifier(filename: str) -> Optional[Tuple[str, str, str]]:
+    """Extract episode identifier from a filename.
+
+    Matches patterns like: S01E01, S01 E01, S01EP01, s01e01, S01 EP01, etc.
+
+    Args:
+        filename: Original filename to extract from
+
+    Returns:
+        Tuple of (season_num, episode_marker, episode_num) if found, None otherwise
+        Example: ("01", "E", "02") for S01E02 or S01 E02
+    """
+    match = EPISODE_PATTERN.search(filename)
+    if match:
+        season_num = match.group(1)
+        ep_marker = match.group(2).upper()  # Normalize to uppercase
+        episode_num = match.group(3)
+        return (season_num, ep_marker, episode_num)
+    return None
+
+
+def build_episode_identifier(season: str, ep_marker: str, episode: str) -> str:
+    """Build a normalized episode identifier string.
+
+    Args:
+        season: Season number (e.g., "01")
+        ep_marker: Episode marker (e.g., "E" or "EP")
+        episode: Episode number (e.g., "02")
+
+    Returns:
+        Normalized identifier like "S01E02"
+    """
+    # Normalize EP to E for consistency
+    marker = "E" if ep_marker.upper() in ("E", "EP") else ep_marker.upper()
+    return f"S{season}{marker}{episode}"
+
+
+def insert_episode_into_name(
+    new_name: str, episode_info: Tuple[str, str, str]
+) -> str:
+    """Insert episode identifier into the new name.
+
+    If the new name has a season-only pattern (e.g., "S01"), replace it
+    with the full season+episode identifier (e.g., "S01E02").
+
+    Args:
+        new_name: The new name (typically from release title)
+        episode_info: Tuple of (season_num, ep_marker, episode_num)
+
+    Returns:
+        New name with episode identifier inserted
+    """
+    season_num, ep_marker, episode_num = episode_info
+    full_identifier = build_episode_identifier(season_num, ep_marker, episode_num)
+
+    # Check if new_name already has an episode pattern FIRST
+    # This must be checked before season-only pattern to avoid partial matches
+    if EPISODE_PATTERN.search(new_name):
+        # Already has episode info, replace it with the correct one
+        return EPISODE_PATTERN.sub(full_identifier, new_name, count=1)
+
+    # Check if new_name has season-only pattern (no episode)
+    season_match = SEASON_ONLY_PATTERN.search(new_name)
+    if season_match:
+        # Replace season-only with full season+episode
+        return SEASON_ONLY_PATTERN.sub(full_identifier, new_name, count=1)
+
+    # No season pattern found, try to insert after series name
+    # Look for a good insertion point (before quality markers, year, etc.)
+    # Common patterns to insert before: year (4 digits), quality (1080p, 720p, etc.)
+    insertion_patterns = [
+        r"\b(19|20)\d{2}\b",  # Year
+        r"\b\d{3,4}p\b",  # Resolution like 1080p, 720p
+        r"\b(HDTV|WEBDL|WEB-DL|BLURAY|BDRIP|WEBRIP)\b",  # Source
+    ]
+
+    for pattern in insertion_patterns:
+        match = re.search(pattern, new_name, re.IGNORECASE)
+        if match:
+            insert_pos = match.start()
+            # Insert episode identifier before this match
+            prefix = new_name[:insert_pos].rstrip()
+            suffix = new_name[insert_pos:]
+            return f"{prefix} {full_identifier} {suffix}"
+
+    # Fallback: append before the last word (often release group)
+    parts = new_name.rsplit(" ", 1)
+    if len(parts) == 2:
+        return f"{parts[0]} {full_identifier} {parts[1]}"
+
+    # Last resort: just append
+    return f"{new_name} {full_identifier}"
+
+
+# =============================================================================
 # Rename Operations
 # =============================================================================
 
@@ -212,9 +324,12 @@ def build_new_file_path(
 ) -> str:
     """Build new file path based on rename.
 
+    For TV series files, preserves the episode identifier (S01E02, etc.)
+    from the original filename while applying the new name format.
+
     Args:
         old_path: Original file path
-        new_name: New name to use
+        new_name: New name to use (typically from release title)
         root_folder: Root folder if exists
 
     Returns:
@@ -225,6 +340,23 @@ def build_new_file_path(
     if "." in old_path:
         ext = "." + old_path.rsplit(".", 1)[-1]
 
+    # Get the original filename without path
+    original_filename = old_path.rsplit("/", 1)[-1] if "/" in old_path else old_path
+
+    # Extract episode identifier from original filename
+    episode_info = extract_episode_identifier(original_filename)
+
+    # Build the file's base name
+    if episode_info:
+        # TV series: insert episode identifier into the new name
+        file_base_name = insert_episode_into_name(new_name, episode_info)
+        logger.debug(
+            f"Preserved episode info: {original_filename} -> {file_base_name}{ext}"
+        )
+    else:
+        # Movie or no episode info: use new name as-is
+        file_base_name = new_name
+
     # If file is in root folder, preserve structure
     if root_folder and old_path.startswith(root_folder + "/"):
         # Get relative path after root folder
@@ -232,12 +364,12 @@ def build_new_file_path(
         if "/" in relative:
             # Keep subdirectory structure
             subdir = relative.rsplit("/", 1)[0]
-            return f"{new_name}/{subdir}/{new_name}{ext}"
+            return f"{new_name}/{subdir}/{file_base_name}{ext}"
         else:
-            return f"{new_name}/{new_name}{ext}"
+            return f"{new_name}/{file_base_name}{ext}"
 
     # Single file or flat structure
-    return f"{new_name}{ext}"
+    return f"{file_base_name}{ext}"
 
 
 async def perform_rename(

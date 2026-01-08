@@ -54,11 +54,30 @@ def mock_torrent():
 
 @pytest.fixture
 def mock_torrent_files():
-    """Create mock torrent files list."""
+    """Create mock torrent files list (multi-file torrent with root folder)."""
     return [
         {"name": "Original.Torrent.Name-Group/movie.mkv"},
         {"name": "Original.Torrent.Name-Group/sample.mkv"},
         {"name": "Original.Torrent.Name-Group/subs/english.srt"},
+    ]
+
+
+@pytest.fixture
+def mock_single_file():
+    """Create mock single file torrent (no root folder)."""
+    return [
+        {"name": "Movie.2024.1080p.BluRay.mkv"},
+    ]
+
+
+@pytest.fixture
+def mock_tv_series_files():
+    """Create mock TV series files with multiple episodes."""
+    return [
+        {"name": "Series.S01.Complete/Series.S01E01.Pilot.mkv"},
+        {"name": "Series.S01.Complete/Series.S01E02.Episode.Two.mkv"},
+        {"name": "Series.S01.Complete/Series.S01 E03.Episode.Three.mkv"},
+        {"name": "Series.S01.Complete/Series.S01EP04.Episode.Four.mkv"},
     ]
 
 
@@ -562,6 +581,312 @@ class TestPerformRename:
         
         assert result is False
 
+    @pytest.mark.asyncio
+    async def test_rename_folder_only_mode(self, mock_qbit_client):
+        """Test folder_only rename mode - only renames root folder."""
+        from src.rename import RenameMode, perform_rename
+        
+        result = await perform_rename(
+            qbit=mock_qbit_client,
+            torrent_hash="AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+            new_name="New Folder Name",
+            mode=RenameMode.FOLDER_ONLY,
+        )
+        
+        assert result is True
+        mock_qbit_client.rename_torrent.assert_not_called()
+        mock_qbit_client.rename_folder.assert_called_once()
+        mock_qbit_client.rename_file.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rename_files_only_mode(self, mock_qbit_client):
+        """Test files_only rename mode - only renames individual files."""
+        from src.rename import RenameMode, perform_rename
+        
+        result = await perform_rename(
+            qbit=mock_qbit_client,
+            torrent_hash="AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+            new_name="New File Name",
+            mode=RenameMode.FILES_ONLY,
+        )
+        
+        assert result is True
+        mock_qbit_client.rename_torrent.assert_not_called()
+        mock_qbit_client.rename_folder.assert_not_called()
+        # Files should be renamed
+        assert mock_qbit_client.rename_file.call_count > 0
+
+
+# =============================================================================
+# Single File Torrent Rename Tests
+# =============================================================================
+
+
+class TestSingleFileTorrentRename:
+    """Test rename operations on single file torrents (no root folder)."""
+
+    @pytest.fixture
+    def single_file_qbit_client(self, mock_torrent, mock_single_file):
+        """Create a mock QBitClient with single file torrent."""
+        mock_client = MagicMock()
+        mock_client.wait_for_torrent = AsyncMock(return_value=mock_torrent)
+        mock_client.get_torrent_info = MagicMock(return_value=mock_torrent)
+        mock_client.get_files = MagicMock(return_value=mock_single_file)
+        mock_client.rename_torrent = MagicMock(return_value=True)
+        mock_client.rename_folder = MagicMock(return_value=True)
+        mock_client.rename_file = MagicMock(return_value=True)
+        return mock_client
+
+    @pytest.mark.asyncio
+    async def test_single_file_torrent_only_mode(self, single_file_qbit_client):
+        """Test torrent_only mode on single file torrent."""
+        from src.rename import RenameMode, perform_rename
+        
+        result = await perform_rename(
+            qbit=single_file_qbit_client,
+            torrent_hash="SINGLEFILE000000000000000000000000000000",
+            new_name="Renamed Movie 2024",
+            mode=RenameMode.TORRENT_ONLY,
+        )
+        
+        assert result is True
+        single_file_qbit_client.rename_torrent.assert_called_once()
+        single_file_qbit_client.rename_folder.assert_not_called()
+        single_file_qbit_client.rename_file.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_single_file_torrent_and_folder_mode(self, single_file_qbit_client):
+        """Test torrent_and_folder mode on single file torrent (no folder to rename)."""
+        from src.rename import RenameMode, perform_rename
+        
+        result = await perform_rename(
+            qbit=single_file_qbit_client,
+            torrent_hash="SINGLEFILE000000000000000000000000000000",
+            new_name="Renamed Movie 2024",
+            mode=RenameMode.TORRENT_AND_FOLDER,
+        )
+        
+        assert result is True
+        single_file_qbit_client.rename_torrent.assert_called_once()
+        # No root folder in single file torrent, so rename_folder should not be called
+        single_file_qbit_client.rename_folder.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_single_file_torrent_folder_files_mode(self, single_file_qbit_client):
+        """Test torrent_folder_files mode on single file torrent."""
+        from src.rename import RenameMode, perform_rename
+        
+        result = await perform_rename(
+            qbit=single_file_qbit_client,
+            torrent_hash="SINGLEFILE000000000000000000000000000000",
+            new_name="Renamed Movie 2024",
+            mode=RenameMode.TORRENT_FOLDER_FILES,
+        )
+        
+        assert result is True
+        single_file_qbit_client.rename_torrent.assert_called_once()
+        # No root folder, so rename_folder should not be called
+        single_file_qbit_client.rename_folder.assert_not_called()
+        # But file should be renamed
+        single_file_qbit_client.rename_file.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_single_file_folder_only_mode(self, single_file_qbit_client):
+        """Test folder_only mode on single file torrent (nothing to rename)."""
+        from src.rename import RenameMode, perform_rename
+        
+        result = await perform_rename(
+            qbit=single_file_qbit_client,
+            torrent_hash="SINGLEFILE000000000000000000000000000000",
+            new_name="Renamed Movie 2024",
+            mode=RenameMode.FOLDER_ONLY,
+        )
+        
+        assert result is True
+        single_file_qbit_client.rename_torrent.assert_not_called()
+        single_file_qbit_client.rename_folder.assert_not_called()
+        single_file_qbit_client.rename_file.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_single_file_files_only_mode(self, single_file_qbit_client):
+        """Test files_only mode on single file torrent."""
+        from src.rename import RenameMode, perform_rename
+        
+        result = await perform_rename(
+            qbit=single_file_qbit_client,
+            torrent_hash="SINGLEFILE000000000000000000000000000000",
+            new_name="Renamed Movie 2024",
+            mode=RenameMode.FILES_ONLY,
+        )
+        
+        assert result is True
+        single_file_qbit_client.rename_torrent.assert_not_called()
+        single_file_qbit_client.rename_folder.assert_not_called()
+        single_file_qbit_client.rename_file.assert_called_once()
+
+
+# =============================================================================
+# Multi-File Torrent Rename Tests (All Modes)
+# =============================================================================
+
+
+class TestMultiFileTorrentRename:
+    """Test rename operations on multi-file torrents with all modes."""
+
+    @pytest.mark.asyncio
+    async def test_multi_file_all_modes_call_correct_methods(self, mock_qbit_client):
+        """Test all rename modes call the correct qBit methods for multi-file torrents."""
+        from src.rename import RenameMode, perform_rename
+        
+        test_cases = [
+            {
+                "mode": RenameMode.TORRENT_ONLY,
+                "expect_torrent": True,
+                "expect_folder": False,
+                "expect_files": False,
+            },
+            {
+                "mode": RenameMode.TORRENT_AND_FOLDER,
+                "expect_torrent": True,
+                "expect_folder": True,
+                "expect_files": False,
+            },
+            {
+                "mode": RenameMode.TORRENT_FOLDER_FILES,
+                "expect_torrent": True,
+                "expect_folder": True,
+                "expect_files": True,
+            },
+            {
+                "mode": RenameMode.FOLDER_ONLY,
+                "expect_torrent": False,
+                "expect_folder": True,
+                "expect_files": False,
+            },
+            {
+                "mode": RenameMode.FILES_ONLY,
+                "expect_torrent": False,
+                "expect_folder": False,
+                "expect_files": True,
+            },
+        ]
+        
+        for case in test_cases:
+            # Reset mocks
+            mock_qbit_client.rename_torrent.reset_mock()
+            mock_qbit_client.rename_folder.reset_mock()
+            mock_qbit_client.rename_file.reset_mock()
+            
+            result = await perform_rename(
+                qbit=mock_qbit_client,
+                torrent_hash="MULTIFILE0000000000000000000000000000000",
+                new_name="New Multi File Name",
+                mode=case["mode"],
+            )
+            
+            assert result is True, f"Failed for mode: {case['mode']}"
+            
+            if case["expect_torrent"]:
+                assert mock_qbit_client.rename_torrent.called, f"Expected rename_torrent for {case['mode']}"
+            else:
+                assert not mock_qbit_client.rename_torrent.called, f"Unexpected rename_torrent for {case['mode']}"
+            
+            if case["expect_folder"]:
+                assert mock_qbit_client.rename_folder.called, f"Expected rename_folder for {case['mode']}"
+            else:
+                assert not mock_qbit_client.rename_folder.called, f"Unexpected rename_folder for {case['mode']}"
+            
+            if case["expect_files"]:
+                assert mock_qbit_client.rename_file.called, f"Expected rename_file for {case['mode']}"
+            else:
+                assert not mock_qbit_client.rename_file.called, f"Unexpected rename_file for {case['mode']}"
+
+
+# =============================================================================
+# TV Series Multi-Episode Rename Tests
+# =============================================================================
+
+
+class TestTVSeriesRename:
+    """Test rename operations on TV series with episode preservation."""
+
+    @pytest.fixture
+    def tv_series_qbit_client(self, mock_torrent, mock_tv_series_files):
+        """Create a mock QBitClient with TV series files."""
+        mock_client = MagicMock()
+        # Update torrent name for TV series
+        mock_torrent.get = MagicMock(
+            side_effect=lambda k, d=None: {"name": "Series.S01.Complete"}.get(k, d)
+        )
+        mock_client.wait_for_torrent = AsyncMock(return_value=mock_torrent)
+        mock_client.get_torrent_info = MagicMock(return_value=mock_torrent)
+        mock_client.get_files = MagicMock(return_value=mock_tv_series_files)
+        mock_client.rename_torrent = MagicMock(return_value=True)
+        mock_client.rename_folder = MagicMock(return_value=True)
+        mock_client.rename_file = MagicMock(return_value=True)
+        return mock_client
+
+    @pytest.mark.asyncio
+    async def test_tv_series_files_renamed_with_episode_preserved(self, tv_series_qbit_client):
+        """Test that TV series files are renamed with episode numbers preserved."""
+        from src.rename import RenameMode, perform_rename
+        
+        result = await perform_rename(
+            qbit=tv_series_qbit_client,
+            torrent_hash="TVSERIES00000000000000000000000000000000",
+            new_name="Series S01 1080p WEBDL",
+            mode=RenameMode.TORRENT_FOLDER_FILES,
+        )
+        
+        assert result is True
+        
+        # Check that rename_file was called for each episode
+        assert tv_series_qbit_client.rename_file.call_count == 4
+        
+        # Get all the new file paths that were used
+        rename_calls = tv_series_qbit_client.rename_file.call_args_list
+        new_paths = [call[0][2] for call in rename_calls]  # Third argument is new_path
+        
+        # Verify episode numbers are preserved in new paths
+        assert any("S01E01" in path for path in new_paths), f"S01E01 not found in {new_paths}"
+        assert any("S01E02" in path for path in new_paths), f"S01E02 not found in {new_paths}"
+        assert any("S01E03" in path for path in new_paths), f"S01E03 not found in {new_paths}"
+        assert any("S01E04" in path for path in new_paths), f"S01E04 not found in {new_paths}"
+
+    @pytest.mark.asyncio
+    async def test_tv_series_torrent_only_mode(self, tv_series_qbit_client):
+        """Test torrent_only mode doesn't touch files."""
+        from src.rename import RenameMode, perform_rename
+        
+        result = await perform_rename(
+            qbit=tv_series_qbit_client,
+            torrent_hash="TVSERIES00000000000000000000000000000000",
+            new_name="Series S01 1080p WEBDL",
+            mode=RenameMode.TORRENT_ONLY,
+        )
+        
+        assert result is True
+        tv_series_qbit_client.rename_torrent.assert_called_once()
+        tv_series_qbit_client.rename_file.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tv_series_files_only_mode(self, tv_series_qbit_client):
+        """Test files_only mode renames all episode files."""
+        from src.rename import RenameMode, perform_rename
+        
+        result = await perform_rename(
+            qbit=tv_series_qbit_client,
+            torrent_hash="TVSERIES00000000000000000000000000000000",
+            new_name="Series S01 1080p WEBDL",
+            mode=RenameMode.FILES_ONLY,
+        )
+        
+        assert result is True
+        tv_series_qbit_client.rename_torrent.assert_not_called()
+        tv_series_qbit_client.rename_folder.assert_not_called()
+        # All 4 episode files should be renamed
+        assert tv_series_qbit_client.rename_file.call_count == 4
+
 
 # =============================================================================
 # Trigger Filter Tests
@@ -603,6 +928,92 @@ class TestTriggerFilters:
         rules = RenameRules()
         rules.indexers_exclude = ["TrackerA.*"]
         should_proc, reason = should_process(payload, rules)
+        assert should_proc is False
+        assert "exclude" in reason
+
+    def test_run_only_on_specific_tracker(self, radarr_payload, sonarr_payload):
+        """Test processing only for a specific tracker/indexer.
+        
+        This test verifies the use case where you want to rename torrents
+        ONLY from a specific private tracker and skip all others.
+        """
+        from src.config import RenameRules
+        from src.models import RadarrWebhook, SonarrWebhook
+        from src.rename import should_process
+        
+        # Configure rules to only process from "PrivateTracker"
+        rules = RenameRules()
+        rules.indexers_include = ["PrivateTracker.*"]
+        
+        # Test with Radarr - TrackerA should NOT be processed
+        radarr = RadarrWebhook(**radarr_payload)
+        should_proc, reason = should_process(radarr, rules)
+        assert should_proc is False
+        assert "indexer" in reason.lower()
+        
+        # Modify payload to use the target tracker - should be processed
+        radarr_payload["release"]["indexer"] = "PrivateTracker (API)"
+        radarr_private = RadarrWebhook(**radarr_payload)
+        should_proc, reason = should_process(radarr_private, rules)
+        assert should_proc is True
+        
+        # Test with Sonarr - TrackerB should NOT be processed
+        sonarr = SonarrWebhook(**sonarr_payload)
+        should_proc, reason = should_process(sonarr, rules)
+        assert should_proc is False
+        
+        # Modify to use target tracker
+        sonarr_payload["release"]["indexer"] = "PrivateTracker (Prowlarr)"
+        sonarr_private = SonarrWebhook(**sonarr_payload)
+        should_proc, reason = should_process(sonarr_private, rules)
+        assert should_proc is True
+
+    def test_multiple_specific_trackers(self, radarr_payload):
+        """Test processing from multiple specific trackers."""
+        from src.config import RenameRules
+        from src.models import RadarrWebhook
+        from src.rename import should_process
+        
+        # Configure rules to only process from two specific trackers
+        rules = RenameRules()
+        rules.indexers_include = ["TrackerA.*", "TrackerB.*"]
+        
+        # TrackerA should be processed
+        payload = RadarrWebhook(**radarr_payload)
+        should_proc, reason = should_process(payload, rules)
+        assert should_proc is True
+        
+        # TrackerB should be processed
+        radarr_payload["release"]["indexer"] = "TrackerB (API)"
+        payload_b = RadarrWebhook(**radarr_payload)
+        should_proc, reason = should_process(payload_b, rules)
+        assert should_proc is True
+        
+        # TrackerC should NOT be processed
+        radarr_payload["release"]["indexer"] = "TrackerC (API)"
+        payload_c = RadarrWebhook(**radarr_payload)
+        should_proc, reason = should_process(payload_c, rules)
+        assert should_proc is False
+
+    def test_exclude_specific_tracker(self, radarr_payload):
+        """Test excluding a specific tracker while allowing all others."""
+        from src.config import RenameRules
+        from src.models import RadarrWebhook
+        from src.rename import should_process
+        
+        # Configure rules to exclude only PublicTracker
+        rules = RenameRules()
+        rules.indexers_exclude = ["PublicTracker.*"]
+        
+        # TrackerA should be processed (not in exclude list)
+        payload = RadarrWebhook(**radarr_payload)
+        should_proc, reason = should_process(payload, rules)
+        assert should_proc is True
+        
+        # PublicTracker should NOT be processed
+        radarr_payload["release"]["indexer"] = "PublicTracker (RARBG)"
+        payload_public = RadarrWebhook(**radarr_payload)
+        should_proc, reason = should_process(payload_public, rules)
         assert should_proc is False
         assert "exclude" in reason
 
