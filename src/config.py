@@ -45,6 +45,11 @@ class RenameRules:
     """Rename rules and trigger filters loaded from YAML config."""
 
     def __init__(self):
+        # Config file state
+        self.config_path: str = ""
+        self.config_found: bool = False
+        self.config_error: Optional[str] = None
+
         # Trigger filters
         self.indexers_include: List[str] = []
         self.indexers_exclude: List[str] = []
@@ -69,11 +74,14 @@ class RenameRules:
     def from_yaml(cls, file_path: str) -> "RenameRules":
         """Load rules from YAML file."""
         rules = cls()
+        rules.config_path = file_path
 
         path = Path(file_path)
         if not path.exists():
-            logger.info(f"Rules file not found at {file_path}, using defaults")
+            rules.config_found = False
             return rules
+
+        rules.config_found = True
 
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -99,12 +107,78 @@ class RenameRules:
             rules.replace_patterns = data.get("replace_patterns") or {}
             rules.skip_title_patterns = data.get("skip_title_patterns") or []
 
-            logger.info(f"Loaded rules from {file_path}")
-
         except Exception as e:
-            logger.error(f"Error loading rules file: {e}")
+            rules.config_error = str(e)
 
         return rules
+
+    def has_trigger_filters(self) -> bool:
+        """Check if any trigger filters are configured."""
+        return bool(
+            self.indexers_include
+            or self.indexers_exclude
+            or self.qualities_include
+            or self.qualities_exclude
+            or self.customformats_require_any
+            or self.customformats_exclude
+            or self.min_customformat_score is not None
+            or self.download_clients_include
+            or self.download_clients_exclude
+            or self.release_groups_include
+            or self.release_groups_exclude
+        )
+
+    def has_rename_rules(self) -> bool:
+        """Check if any rename rules are configured."""
+        return bool(
+            self.prefix
+            or self.suffix
+            or self.remove_patterns
+            or self.replace_patterns
+            or self.skip_title_patterns
+        )
+
+    def get_active_filters_summary(self) -> List[str]:
+        """Get list of active trigger filter names."""
+        active = []
+        if self.indexers_include:
+            active.append(f"indexers_include ({len(self.indexers_include)})")
+        if self.indexers_exclude:
+            active.append(f"indexers_exclude ({len(self.indexers_exclude)})")
+        if self.qualities_include:
+            active.append(f"qualities_include ({len(self.qualities_include)})")
+        if self.qualities_exclude:
+            active.append(f"qualities_exclude ({len(self.qualities_exclude)})")
+        if self.customformats_require_any:
+            active.append(f"customformats_require_any ({len(self.customformats_require_any)})")
+        if self.customformats_exclude:
+            active.append(f"customformats_exclude ({len(self.customformats_exclude)})")
+        if self.min_customformat_score is not None:
+            active.append(f"min_customformat_score ({self.min_customformat_score})")
+        if self.download_clients_include:
+            active.append(f"download_clients_include ({len(self.download_clients_include)})")
+        if self.download_clients_exclude:
+            active.append(f"download_clients_exclude ({len(self.download_clients_exclude)})")
+        if self.release_groups_include:
+            active.append(f"release_groups_include ({len(self.release_groups_include)})")
+        if self.release_groups_exclude:
+            active.append(f"release_groups_exclude ({len(self.release_groups_exclude)})")
+        return active
+
+    def get_active_rules_summary(self) -> List[str]:
+        """Get list of active rename rule names."""
+        active = []
+        if self.prefix:
+            active.append(f"prefix: '{self.prefix}'")
+        if self.suffix:
+            active.append(f"suffix: '{self.suffix}'")
+        if self.remove_patterns:
+            active.append(f"remove_patterns ({len(self.remove_patterns)})")
+        if self.replace_patterns:
+            active.append(f"replace_patterns ({len(self.replace_patterns)})")
+        if self.skip_title_patterns:
+            active.append(f"skip_title_patterns ({len(self.skip_title_patterns)})")
+        return active
 
 
 # Global instances

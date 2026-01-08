@@ -35,6 +35,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"qBittorrent URL: {settings.qbittorrent_url}")
     logger.info(f"Rename mode: {settings.rename_mode}")
 
+    # Log config file state
+    _log_config_state()
+
     # Initialize qBittorrent client
     qbit_client = QBitClient(
         url=settings.qbittorrent_url,
@@ -45,6 +48,35 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down Groomarr service")
+
+
+def _log_config_state():
+    """Log the current config file state and active rules."""
+    if not rules.config_found:
+        logger.warning(f"Config file not found: {rules.config_path}")
+        logger.info("Using default settings (no filters, no rename rules)")
+        return
+
+    if rules.config_error:
+        logger.error(f"Config file error: {rules.config_error}")
+        logger.info("Using default settings due to config error")
+        return
+
+    logger.info(f"Config file loaded: {rules.config_path}")
+
+    # Log trigger filters
+    if rules.has_trigger_filters():
+        filters = rules.get_active_filters_summary()
+        logger.info(f"Active trigger filters: {', '.join(filters)}")
+    else:
+        logger.info("Trigger filters: none (processing all webhooks)")
+
+    # Log rename rules
+    if rules.has_rename_rules():
+        rename_rules = rules.get_active_rules_summary()
+        logger.info(f"Active rename rules: {', '.join(rename_rules)}")
+    else:
+        logger.info("Rename rules: none (titles will pass through unchanged)")
 
 
 app = FastAPI(
