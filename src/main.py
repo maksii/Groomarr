@@ -52,8 +52,30 @@ async def lifespan(app: FastAPI):
 
 def _log_config_state():
     """Log the current config file state and active rules."""
+    from pathlib import Path
+
     if not rules.config_found:
         logger.warning(f"Config file not found: {rules.config_path}")
+
+        # Show what's actually in the config directory to help debug
+        config_dir = Path(rules.config_path).parent
+        if config_dir.exists():
+            files = list(config_dir.iterdir())
+            if files:
+                file_names = [f.name for f in files]
+                logger.info(f"Files in {config_dir}: {', '.join(file_names)}")
+            else:
+                logger.info(f"Directory {config_dir} exists but is empty")
+        else:
+            logger.warning(f"Directory {config_dir} does not exist")
+
+        # Check if example file exists and hint the user
+        example_path = Path(rules.config_path + ".example")
+        if example_path.exists():
+            logger.info(
+                f"Hint: Found {example_path.name} - copy it to rename_rules.yaml to get started"
+            )
+
         logger.info("Using default settings (no filters, no rename rules)")
         return
 
