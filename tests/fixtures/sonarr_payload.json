@@ -1,0 +1,34 @@
+{
+  "eventType": "Grab",
+  "series": {
+    "id": 501,
+    "title": "Example Series",
+    "path": "/tv/Example Series",
+    "tvdbId": 123456,
+    "imdbId": "tt1234567",
+    "type": "standard"
+  },
+  "episodes": [
+    {
+      "id": 10001,
+      "episodeNumber": 5,
+      "seasonNumber": 2,
+      "title": "The Episode Title",
+      "airDate": "2024-03-15",
+      "airDateUtc": "2024-03-15T20:00:00Z"
+    }
+  ],
+  "release": {
+    "releaseTitle": "Example.Series.S02E05.The.Episode.Title.1080p.WEB-DL.H.264-GroupY",
+    "quality": "WEBDL-1080p",
+    "releaseGroup": "GroupY",
+    "size": 1573741824,
+    "indexer": "TrackerB (API) (Prowlarr)",
+    "downloadId": "1234567890ABCDEF1234567890ABCDEF12345678",
+    "customFormats": ["1080p", "WEB-DL"],
+    "customFormatScore": 500
+  },
+  "downloadClient": "tv_qBit",
+  "downloadClientType": "qBittorrent",
+  "instanceName": "Sonarr"
+}

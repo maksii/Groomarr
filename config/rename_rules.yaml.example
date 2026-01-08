@@ -1,0 +1,77 @@
+# ============================================
+# TRIGGER FILTERS - Control WHEN to rename
+# ============================================
+# All filters use regex patterns, case-insensitive matching
+
+# Indexer filtering (from release.indexer field in webhook)
+indexers_include: []           # Empty = allow all. If set, ONLY these indexers processed
+  # - "TrackerA.*"             # Only TrackerA indexers
+  # - "IndexerB"
+  # - "IndexerC"
+indexers_exclude: []           # Skip these indexers
+  # - ".*Public.*"             # Skip public indexers
+  # - "IndexerD"
+  # - "IndexerE"
+
+# Quality filtering (from release.quality field)
+qualities_include: []          # Empty = allow all
+  # - "Bluray-1080p"
+  # - "WEB.*1080p"             # Any WEB 1080p
+qualities_exclude: []          # Skip these qualities
+  # - "CAM"
+  # - "TS"
+  # - "HDTS"
+  # - ".*720p.*"               # Skip all 720p
+  # - ".*480p.*"
+
+# Custom format filtering (from webhook customFormats array)
+# Available in Radarr v4+ / Sonarr v4+
+customformats_require_any: []  # Rename ONLY if ANY of these custom formats present
+  # - "x265"
+  # - "HEVC"
+customformats_exclude: []      # Skip if ANY of these custom formats present
+  # - "DV"                     # Skip Dolby Vision
+  # - "3D"
+  # - "LargeFormat"            # Skip large formats (too large to rename quickly)
+
+# Custom format score threshold
+min_customformat_score: null   # null = disabled. e.g., 1000 = skip if score below 1000
+
+# Download client filtering (if you have multiple qBit instances)
+download_clients_include: []   # Empty = allow all
+  # - "movies_qBit"
+  # - "tv_qBit"
+download_clients_exclude: []
+  # - "seed_qBit"              # Don't rename on seeding-only client
+
+# Release group filtering
+release_groups_include: []     # Empty = allow all
+  # - "GroupA"
+  # - "GroupB"
+release_groups_exclude: []
+  # - "GroupC"                 # Known bad quality
+
+# ============================================
+# RENAME RULES - Control HOW to rename
+# ============================================
+
+# Add prefix/suffix to renamed titles
+prefix: ""                     # e.g., "[AUTO] "
+suffix: ""                     # e.g., " [Renamed]"
+
+# Patterns to REMOVE from release title (regex, applied in order)
+remove_patterns: []
+  # - "\\[.*?\\]"              # Remove [bracketed] tags
+  # - "\\(.*?\\)"              # Remove (parentheses)
+  # - "-\\w+$"                 # Remove release group at end
+
+# Pattern REPLACEMENTS (regex pattern -> replacement string)
+replace_patterns: {}
+  # "\\.": " "                 # Dots to spaces
+  # "_": " "                   # Underscores to spaces
+  # "\\s{2,}": " "             # Multiple spaces to single
+
+# Skip renaming if release title matches ANY of these (after other rules applied)
+skip_title_patterns: []
+  # - "^Sample"
+  # - "PROPER"                 # Don't rename PROPERs

@@ -1,0 +1,23 @@
+{
+  "eventType": "Grab",
+  "movie": {
+    "id": 1001,
+    "title": "Example Movie",
+    "year": 2020,
+    "tmdbId": 12345,
+    "imdbId": "tt0000001"
+  },
+  "release": {
+    "releaseTitle": "Example Movie 2020 DE 4K Remaster BluRay 1080p ENG H.265-ReleaseGrp",
+    "quality": "Bluray-1080p",
+    "releaseGroup": "ReleaseGrp",
+    "size": 10518539264,
+    "indexer": "TrackerA (API) (Prowlarr)",
+    "customFormats": ["1080p", "4K Remaster", "German", "Custom Tag A", "Custom Tag B", "Custom Tag C", "x265", "x265 (HD)", "x265 (no HDR/DV)"],
+    "customFormatScore": 8825
+  },
+  "downloadId": "AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+  "downloadClient": "movies_qBit",
+  "downloadClientType": "qBittorrent",
+  "instanceName": "Radarr"
+}

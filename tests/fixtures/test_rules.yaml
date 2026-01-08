@@ -1,0 +1,24 @@
+# Test rules for integration tests
+# Empty rules - no filters, no transformations
+
+# Trigger filters - empty means allow all
+indexers_include: []
+indexers_exclude: []
+qualities_include: []
+qualities_exclude: []
+download_clients_include: []
+download_clients_exclude: []
+release_groups_include: []
+release_groups_exclude: []
+
+# Custom format filters
+customformats_require_any: []
+customformats_exclude: []
+min_customformat_score: null
+
+# Rename rules - minimal for testing
+prefix: ""
+suffix: ""
+remove_patterns: []
+replace_patterns: {}
+skip_title_patterns: []
