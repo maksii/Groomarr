@@ -228,16 +228,19 @@ app = FastAPI(
 
 async def _validate_rename_score(
     source: str,
-    release_title: str,
+    current_name: str,
     new_name: str,
     hash_short: str,
 ) -> bool:
     """Validate rename using Arr API custom format score comparison.
 
+    Compares the current torrent name in qBittorrent against the proposed new name
+    to ensure the rename won't negatively impact Sonarr/Radarr custom format scoring.
+
     Args:
         source: Source application (radarr/sonarr)
-        release_title: Original release title
-        new_name: Proposed new name
+        current_name: Current torrent name in qBittorrent
+        new_name: Proposed new name after rename
         hash_short: Short torrent hash for logging
 
     Returns:
@@ -265,7 +268,7 @@ async def _validate_rename_score(
         return False
 
     # Validate the rename
-    comparison = await arr_client.validate_rename(release_title, new_name)
+    comparison = await arr_client.validate_rename(current_name, new_name)
 
     if comparison is None:
         # API error - skip rename
@@ -336,7 +339,8 @@ async def process_rename_task(
     logger.info(f"[{source}] Renaming to: '{new_name}'")
 
     # Validate rename using Arr API (if enabled)
-    should_rename = await _validate_rename_score(source, release_title, new_name, hash_short)
+    # Compare current torrent name against proposed new name
+    should_rename = await _validate_rename_score(source, torrent.name, new_name, hash_short)
     if not should_rename:
         return
 

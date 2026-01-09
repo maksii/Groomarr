@@ -1249,7 +1249,7 @@ class TestScoreValidation:
         with patch("src.main.rules", rules):
             result = await _validate_rename_score(
                 source="radarr",
-                release_title="Original.Title",
+                current_name="Current.Torrent.Name",
                 new_name="New.Title",
                 hash_short="ABCD1234",
             )
@@ -1288,7 +1288,7 @@ class TestScoreValidation:
 
             result = await _validate_rename_score(
                 source="radarr",
-                release_title="Original.Title",
+                current_name="Current.Torrent.Name",
                 new_name="New.Title",
                 hash_short="ABCD1234",
             )
@@ -1326,7 +1326,7 @@ class TestScoreValidation:
 
             result = await _validate_rename_score(
                 source="radarr",
-                release_title="Original.Title",
+                current_name="Current.Torrent.Name",
                 new_name="New.Title",
                 hash_short="ABCD1234",
             )
@@ -1364,7 +1364,7 @@ class TestScoreValidation:
 
             result = await _validate_rename_score(
                 source="radarr",
-                release_title="Original.Title",
+                current_name="Current.Torrent.Name",
                 new_name="New.Title",
                 hash_short="ABCD1234",
             )
@@ -1394,7 +1394,7 @@ class TestScoreValidation:
 
             result = await _validate_rename_score(
                 source="radarr",
-                release_title="Original.Title",
+                current_name="Current.Torrent.Name",
                 new_name="New.Title",
                 hash_short="ABCD1234",
             )
@@ -1420,7 +1420,7 @@ class TestScoreValidation:
 
             result = await _validate_rename_score(
                 source="radarr",
-                release_title="Original.Title",
+                current_name="Current.Torrent.Name",
                 new_name="New.Title",
                 hash_short="ABCD1234",
             )
@@ -1458,7 +1458,7 @@ class TestScoreValidation:
 
             result = await _validate_rename_score(
                 source="sonarr",
-                release_title="Series.S01E01.Title",
+                current_name="Current.Series.S01E01.Name",
                 new_name="Series S01E01 Title",
                 hash_short="EFGH5678",
             )
