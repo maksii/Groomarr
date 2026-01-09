@@ -231,9 +231,7 @@ class HealthCheckFilter(logging.Filter):
 
         # Filter uvicorn access logs for successful /health requests
         # Return True (keep) unless it's a successful health check
-        return not (
-            record.name == "uvicorn.access" and "GET /health" in msg and " 200 " in msg
-        )
+        return not (record.name == "uvicorn.access" and "GET /health" in msg and " 200 " in msg)
 
 
 def setup_logging():
