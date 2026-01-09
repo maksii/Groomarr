@@ -7,6 +7,7 @@ from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from . import __version__
+from .arrapi import ArrClient
 from .config import reload_rules, rules, settings, setup_logging
 from .models import (
     ManualRenameRequest,
@@ -22,14 +23,16 @@ from .rename import RenameMode, apply_rename_rules, perform_rename, should_proce
 setup_logging()
 logger = logging.getLogger(__name__)
 
-# Global qBittorrent client
+# Global clients
 qbit_client: QBitClient = None
+sonarr_client: ArrClient | None = None
+radarr_client: ArrClient | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global qbit_client
+    global qbit_client, sonarr_client, radarr_client
 
     logger.info(f"Starting Groomarr service v{__version__}")
     logger.info(f"qBittorrent URL: {settings.qbittorrent_url}")
@@ -47,7 +50,49 @@ async def lifespan(app: FastAPI):
         password=settings.qbittorrent_password,
     )
 
+    # Initialize Sonarr client (if configured)
+    if settings.sonarr_url and settings.sonarr_api_key:
+        sonarr_client = ArrClient(
+            url=settings.sonarr_url,
+            api_key=settings.sonarr_api_key,
+            app_type="sonarr",
+        )
+        if sonarr_client.check_connection():
+            logger.info(f"Sonarr API connected: {settings.sonarr_url}")
+        else:
+            logger.warning(f"Sonarr API not reachable: {settings.sonarr_url}")
+    else:
+        logger.info("Sonarr API not configured (SONARR_URL/SONARR_API_KEY)")
+
+    # Initialize Radarr client (if configured)
+    if settings.radarr_url and settings.radarr_api_key:
+        radarr_client = ArrClient(
+            url=settings.radarr_url,
+            api_key=settings.radarr_api_key,
+            app_type="radarr",
+        )
+        if radarr_client.check_connection():
+            logger.info(f"Radarr API connected: {settings.radarr_url}")
+        else:
+            logger.warning(f"Radarr API not reachable: {settings.radarr_url}")
+    else:
+        logger.info("Radarr API not configured (RADARR_URL/RADARR_API_KEY)")
+
+    # Log score validation state
+    if rules.validate_custom_format_score:
+        logger.info(
+            f"Score validation enabled (policy: {rules.score_validation_policy})"
+        )
+    else:
+        logger.info("Score validation disabled")
+
     yield
+
+    # Cleanup Arr clients
+    if sonarr_client:
+        await sonarr_client.close()
+    if radarr_client:
+        await radarr_client.close()
 
     logger.info("Shutting down Groomarr service")
 
@@ -183,6 +228,78 @@ app = FastAPI(
 # =============================================================================
 
 
+async def _validate_rename_score(
+    source: str,
+    release_title: str,
+    new_name: str,
+    hash_short: str,
+) -> bool:
+    """Validate rename using Arr API custom format score comparison.
+
+    Args:
+        source: Source application (radarr/sonarr)
+        release_title: Original release title
+        new_name: Proposed new name
+        hash_short: Short torrent hash for logging
+
+    Returns:
+        True if rename should proceed, False if it should be skipped
+    """
+    # Check if validation is enabled
+    if not rules.validate_custom_format_score:
+        return True
+
+    # Get the appropriate client
+    arr_client = radarr_client if source == "radarr" else sonarr_client
+
+    if arr_client is None:
+        arr_url = settings.radarr_url if source == "radarr" else settings.sonarr_url
+        if arr_url:
+            logger.warning(
+                f"[{source}] Skipping rename: {source.title()} API not configured properly "
+                f"(check API key)"
+            )
+        else:
+            logger.warning(
+                f"[{source}] Skipping rename: {source.title()} URL not configured "
+                f"(set {source.upper()}_URL and {source.upper()}_API_KEY)"
+            )
+        return False
+
+    # Validate the rename
+    comparison = await arr_client.validate_rename(release_title, new_name)
+
+    if comparison is None:
+        # API error - skip rename
+        arr_url = settings.radarr_url if source == "radarr" else settings.sonarr_url
+        logger.warning(
+            f"[{source}] Skipping rename for {hash_short}...: "
+            f"{source.title()} API unreachable at {arr_url}"
+        )
+        return False
+
+    if comparison.is_safe:
+        # Score is same or improved - proceed
+        return True
+
+    # Score decreased - check policy
+    if rules.score_validation_policy == "warn":
+        logger.warning(
+            f"[{source}] Proceeding with rename despite score decrease: "
+            f"{comparison.original_score} -> {comparison.new_score} "
+            f"({comparison.score_change:+d})"
+        )
+        return True
+    else:
+        # Default to "block"
+        logger.warning(
+            f"[{source}] Skipping rename for {hash_short}...: "
+            f"score would decrease from {comparison.original_score} to "
+            f"{comparison.new_score} ({comparison.score_change:+d})"
+        )
+        return False
+
+
 async def process_rename_task(
     torrent_hash: str,
     release_title: str,
@@ -219,6 +336,11 @@ async def process_rename_task(
         logger.info(f"[{source}] No rename rules applied, using original title")
 
     logger.info(f"[{source}] Renaming to: '{new_name}'")
+
+    # Validate rename using Arr API (if enabled)
+    should_rename = await _validate_rename_score(source, release_title, new_name, hash_short)
+    if not should_rename:
+        return
 
     # Get rename mode
     try:
@@ -258,16 +380,30 @@ async def process_rename_task(
 async def health():
     """Health check endpoint for Docker.
 
-    Returns service status including qBittorrent connectivity.
+    Returns service status including qBittorrent and Arr API connectivity.
     """
     qbit_connected = qbit_client.check_connection() if qbit_client else False
+    sonarr_connected = sonarr_client.check_connection() if sonarr_client else None
+    radarr_connected = radarr_client.check_connection() if radarr_client else None
 
-    return {
+    # Build response
+    response = {
         "status": "ok" if qbit_connected else "degraded",
         "version": __version__,
         "qbittorrent": "connected" if qbit_connected else "disconnected",
         "dry_run": settings.dry_run,
+        "score_validation": rules.validate_custom_format_score,
     }
+
+    # Add Sonarr status (only if configured)
+    if sonarr_connected is not None:
+        response["sonarr"] = "connected" if sonarr_connected else "disconnected"
+
+    # Add Radarr status (only if configured)
+    if radarr_connected is not None:
+        response["radarr"] = "connected" if radarr_connected else "disconnected"
+
+    return response
 
 
 @app.get("/reload")

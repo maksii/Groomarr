@@ -69,3 +69,4 @@ config/rename_rules.yaml
 # OS files
 .DS_Store
 Thumbs.db
+/.cursor

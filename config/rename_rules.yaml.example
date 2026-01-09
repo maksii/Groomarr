@@ -75,3 +75,25 @@ replace_patterns: {}
 skip_title_patterns: []
   # - "^Sample"
   # - "PROPER"                 # Don't rename PROPERs
+
+# ============================================
+# SCORE VALIDATION - Validate renames via Arr API
+# ============================================
+# Compares custom format scores before/after rename to ensure
+# the new name won't negatively impact Sonarr/Radarr matching.
+#
+# Requires environment variables:
+#   SONARR_URL=http://sonarr:8989
+#   SONARR_API_KEY=your-api-key
+#   RADARR_URL=http://radarr:7878
+#   RADARR_API_KEY=your-api-key
+
+# Enable custom format score validation before rename
+# When enabled, Groomarr will call the Arr API to parse both the original
+# and new name, comparing their custom format scores.
+validate_custom_format_score: false
+
+# Policy when new name has lower custom format score than original:
+#   "block" - Skip rename entirely (safer, default)
+#   "warn"  - Log warning but proceed with rename anyway
+score_validation_policy: "block"

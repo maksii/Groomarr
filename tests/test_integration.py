@@ -1205,6 +1205,374 @@ class TestQBitClient:
 
 
 # =============================================================================
+# Score Validation Tests
+# =============================================================================
+
+
+class TestScoreValidation:
+    """Test score validation functionality with Arr API integration."""
+
+    @pytest.fixture
+    def mock_arr_client(self):
+        """Create a mock ArrClient for testing."""
+        mock_client = MagicMock()
+        mock_client.check_connection = MagicMock(return_value=True)
+        return mock_client
+
+    @pytest.fixture
+    def score_validation_env(self):
+        """Environment variables for score validation testing."""
+        return {
+            "QBITTORRENT_URL": "http://mock:8080",
+            "QBITTORRENT_USERNAME": "test",
+            "QBITTORRENT_PASSWORD": "test",
+            "RADARR_URL": "http://radarr:7878",
+            "RADARR_API_KEY": "test-radarr-key",
+            "SONARR_URL": "http://sonarr:8989",
+            "SONARR_API_KEY": "test-sonarr-key",
+            "RULES_FILE": str(Path(__file__).parent / "fixtures" / "test_rules.yaml"),
+            "INITIAL_DELAY": "0.01",
+            "MAX_RETRIES": "1",
+            "RETRY_DELAY": "0.01",
+        }
+
+    @pytest.mark.asyncio
+    async def test_validate_rename_score_disabled(self, mock_qbit_client, mock_torrent):
+        """When score validation is disabled, rename should proceed without API call."""
+        from src.main import _validate_rename_score
+        from src.config import RenameRules
+
+        # Create rules with validation disabled
+        rules = RenameRules()
+        rules.validate_custom_format_score = False
+
+        with patch("src.main.rules", rules):
+            result = await _validate_rename_score(
+                source="radarr",
+                release_title="Original.Title",
+                new_name="New.Title",
+                hash_short="ABCD1234",
+            )
+
+            assert result is True  # Should proceed without validation
+
+    @pytest.mark.asyncio
+    async def test_validate_rename_score_enabled_safe(self, mock_arr_client):
+        """When score validation passes, rename should proceed."""
+        from src.main import _validate_rename_score
+        from src.config import RenameRules
+        from src.arrapi import ScoreComparison, ParseResult
+
+        # Create rules with validation enabled
+        rules = RenameRules()
+        rules.validate_custom_format_score = True
+        rules.score_validation_policy = "block"
+
+        # Create a safe comparison (scores equal)
+        comparison = ScoreComparison(
+            original_score=11200,
+            new_score=11200,
+            score_change=0,
+            is_safe=True,
+            original_parse=ParseResult("Orig", 11200, [], None),
+            new_parse=ParseResult("New", 11200, [], None),
+        )
+        mock_arr_client.validate_rename = AsyncMock(return_value=comparison)
+
+        with patch("src.main.rules", rules), \
+             patch("src.main.radarr_client", mock_arr_client), \
+             patch("src.main.settings") as mock_settings:
+            mock_settings.radarr_url = "http://radarr:7878"
+
+            result = await _validate_rename_score(
+                source="radarr",
+                release_title="Original.Title",
+                new_name="New.Title",
+                hash_short="ABCD1234",
+            )
+
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_validate_rename_score_block_on_decrease(self, mock_arr_client):
+        """When score decreases with block policy, rename should be skipped."""
+        from src.main import _validate_rename_score
+        from src.config import RenameRules
+        from src.arrapi import ScoreComparison, ParseResult
+
+        rules = RenameRules()
+        rules.validate_custom_format_score = True
+        rules.score_validation_policy = "block"
+
+        # Create an unsafe comparison (score decreased)
+        comparison = ScoreComparison(
+            original_score=11200,
+            new_score=8000,
+            score_change=-3200,
+            is_safe=False,
+            original_parse=ParseResult("Orig", 11200, [], None),
+            new_parse=ParseResult("New", 8000, [], None),
+        )
+        mock_arr_client.validate_rename = AsyncMock(return_value=comparison)
+
+        with patch("src.main.rules", rules), \
+             patch("src.main.radarr_client", mock_arr_client), \
+             patch("src.main.settings") as mock_settings:
+            mock_settings.radarr_url = "http://radarr:7878"
+
+            result = await _validate_rename_score(
+                source="radarr",
+                release_title="Original.Title",
+                new_name="New.Title",
+                hash_short="ABCD1234",
+            )
+
+            assert result is False  # Should block rename
+
+    @pytest.mark.asyncio
+    async def test_validate_rename_score_warn_on_decrease(self, mock_arr_client):
+        """When score decreases with warn policy, rename should proceed with warning."""
+        from src.main import _validate_rename_score
+        from src.config import RenameRules
+        from src.arrapi import ScoreComparison, ParseResult
+
+        rules = RenameRules()
+        rules.validate_custom_format_score = True
+        rules.score_validation_policy = "warn"
+
+        # Create an unsafe comparison (score decreased)
+        comparison = ScoreComparison(
+            original_score=11200,
+            new_score=8000,
+            score_change=-3200,
+            is_safe=False,
+            original_parse=ParseResult("Orig", 11200, [], None),
+            new_parse=ParseResult("New", 8000, [], None),
+        )
+        mock_arr_client.validate_rename = AsyncMock(return_value=comparison)
+
+        with patch("src.main.rules", rules), \
+             patch("src.main.radarr_client", mock_arr_client), \
+             patch("src.main.settings") as mock_settings:
+            mock_settings.radarr_url = "http://radarr:7878"
+
+            result = await _validate_rename_score(
+                source="radarr",
+                release_title="Original.Title",
+                new_name="New.Title",
+                hash_short="ABCD1234",
+            )
+
+            assert result is True  # Should proceed despite score decrease
+
+    @pytest.mark.asyncio
+    async def test_validate_rename_score_api_unreachable(self):
+        """When Arr API is unreachable, rename should be skipped."""
+        from src.main import _validate_rename_score
+        from src.config import RenameRules
+
+        rules = RenameRules()
+        rules.validate_custom_format_score = True
+        rules.score_validation_policy = "block"
+
+        # Mock client that returns None (API error)
+        mock_arr_client = MagicMock()
+        mock_arr_client.validate_rename = AsyncMock(return_value=None)
+
+        with patch("src.main.rules", rules), \
+             patch("src.main.radarr_client", mock_arr_client), \
+             patch("src.main.settings") as mock_settings:
+            mock_settings.radarr_url = "http://radarr:7878"
+
+            result = await _validate_rename_score(
+                source="radarr",
+                release_title="Original.Title",
+                new_name="New.Title",
+                hash_short="ABCD1234",
+            )
+
+            assert result is False  # Should skip rename on API error
+
+    @pytest.mark.asyncio
+    async def test_validate_rename_score_no_client_configured(self):
+        """When Arr client is not configured, rename should be skipped."""
+        from src.main import _validate_rename_score
+        from src.config import RenameRules
+
+        rules = RenameRules()
+        rules.validate_custom_format_score = True
+        rules.score_validation_policy = "block"
+
+        with patch("src.main.rules", rules), \
+             patch("src.main.radarr_client", None), \
+             patch("src.main.settings") as mock_settings:
+            mock_settings.radarr_url = None
+
+            result = await _validate_rename_score(
+                source="radarr",
+                release_title="Original.Title",
+                new_name="New.Title",
+                hash_short="ABCD1234",
+            )
+
+            assert result is False  # Should skip when client not configured
+
+    @pytest.mark.asyncio
+    async def test_validate_rename_score_sonarr_source(self, mock_arr_client):
+        """Score validation should use Sonarr client for Sonarr webhooks."""
+        from src.main import _validate_rename_score
+        from src.config import RenameRules
+        from src.arrapi import ScoreComparison, ParseResult
+
+        rules = RenameRules()
+        rules.validate_custom_format_score = True
+        rules.score_validation_policy = "block"
+
+        comparison = ScoreComparison(
+            original_score=9370,
+            new_score=9370,
+            score_change=0,
+            is_safe=True,
+            original_parse=ParseResult("Orig", 9370, [], None),
+            new_parse=ParseResult("New", 9370, [], None),
+        )
+        mock_arr_client.validate_rename = AsyncMock(return_value=comparison)
+
+        with patch("src.main.rules", rules), \
+             patch("src.main.sonarr_client", mock_arr_client), \
+             patch("src.main.radarr_client", None), \
+             patch("src.main.settings") as mock_settings:
+            mock_settings.sonarr_url = "http://sonarr:8989"
+
+            result = await _validate_rename_score(
+                source="sonarr",
+                release_title="Series.S01E01.Title",
+                new_name="Series S01E01 Title",
+                hash_short="EFGH5678",
+            )
+
+            assert result is True
+            mock_arr_client.validate_rename.assert_called_once()
+
+
+class TestHealthEndpointWithArrClients:
+    """Test health endpoint includes Arr API status."""
+
+    @pytest.mark.asyncio
+    async def test_health_includes_arr_status_when_configured(self):
+        """Health endpoint should include Sonarr/Radarr status when configured."""
+        # This test verifies the structure of the health endpoint
+        # when Arr clients are configured
+        from src.config import RenameRules
+
+        rules = RenameRules()
+        rules.validate_custom_format_score = True
+
+        mock_sonarr = MagicMock()
+        mock_sonarr.check_connection = MagicMock(return_value=True)
+
+        mock_radarr = MagicMock()
+        mock_radarr.check_connection = MagicMock(return_value=False)
+
+        mock_qbit = MagicMock()
+        mock_qbit.check_connection = MagicMock(return_value=True)
+
+        with patch.dict(os.environ, {
+            "QBITTORRENT_URL": "http://mock:8080",
+            "QBITTORRENT_USERNAME": "test",
+            "QBITTORRENT_PASSWORD": "test",
+            "RULES_FILE": str(Path(__file__).parent / "fixtures" / "test_rules.yaml"),
+        }):
+            from importlib import reload
+            from src import config
+            reload(config)
+            from src import main
+            reload(main)
+
+            # Replace clients
+            main.qbit_client = mock_qbit
+            main.sonarr_client = mock_sonarr
+            main.radarr_client = mock_radarr
+
+            # Patch rules to enable score validation
+            with patch.object(main, "rules", rules):
+                transport = ASGITransport(app=main.app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.get("/health")
+
+                    assert response.status_code == 200
+                    data = response.json()
+
+                    assert data["status"] == "ok"
+                    assert data["qbittorrent"] == "connected"
+                    assert data["score_validation"] is True
+                    assert data["sonarr"] == "connected"
+                    assert data["radarr"] == "disconnected"
+
+
+class TestConfigScoreValidation:
+    """Test score validation configuration loading."""
+
+    def test_rules_default_values(self):
+        """RenameRules should have correct default values for score validation."""
+        from src.config import RenameRules
+
+        rules = RenameRules()
+
+        assert rules.validate_custom_format_score is False
+        assert rules.score_validation_policy == "block"
+
+    def test_rules_from_yaml_with_score_validation(self, tmp_path):
+        """RenameRules should load score validation settings from YAML."""
+        from src.config import RenameRules
+
+        config_file = tmp_path / "test_rules.yaml"
+        config_file.write_text("""
+validate_custom_format_score: true
+score_validation_policy: "warn"
+""")
+
+        rules = RenameRules.from_yaml(str(config_file))
+
+        assert rules.validate_custom_format_score is True
+        assert rules.score_validation_policy == "warn"
+
+    def test_settings_arr_api_defaults(self):
+        """Settings should have None defaults for Arr API config."""
+        with patch.dict(os.environ, {}, clear=True):
+            from importlib import reload
+            from src import config
+            reload(config)
+
+            # Access settings after reload
+            settings = config.Settings()
+
+            assert settings.sonarr_url is None
+            assert settings.sonarr_api_key is None
+            assert settings.radarr_url is None
+            assert settings.radarr_api_key is None
+
+    def test_settings_arr_api_from_env(self):
+        """Settings should load Arr API config from environment."""
+        with patch.dict(os.environ, {
+            "SONARR_URL": "http://sonarr:8989",
+            "SONARR_API_KEY": "sonarr-key-123",
+            "RADARR_URL": "http://radarr:7878",
+            "RADARR_API_KEY": "radarr-key-456",
+        }):
+            from importlib import reload
+            from src import config
+            reload(config)
+
+            settings = config.Settings()
+
+            assert settings.sonarr_url == "http://sonarr:8989"
+            assert settings.sonarr_api_key == "sonarr-key-123"
+            assert settings.radarr_url == "http://radarr:7878"
+            assert settings.radarr_api_key == "radarr-key-456"
+
+
+# =============================================================================
 # Entry Point
 # =============================================================================
 

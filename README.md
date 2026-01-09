@@ -18,6 +18,7 @@ A webhook service that "grooms" rough releases into presentable ones — automat
 - Customizable rename rules (regex patterns, prefix/suffix)
 - Multiple rename modes (torrent only, folder, files)
 - Handles timing issues with automatic retry/polling
+- **Score validation**: Optionally validates renames against Sonarr/Radarr API to ensure custom format scores aren't negatively impacted
 
 ## Quick Start
 
@@ -73,6 +74,10 @@ docker-compose up -d
 | `INITIAL_DELAY` | `2` | Seconds to wait before first torrent lookup |
 | `MAX_RETRIES` | `10` | Max attempts to find torrent |
 | `RETRY_DELAY` | `3` | Base seconds between retries (uses exponential backoff) |
+| `SONARR_URL` | `null` | Sonarr API URL (for score validation) |
+| `SONARR_API_KEY` | `null` | Sonarr API key (Settings → General) |
+| `RADARR_URL` | `null` | Radarr API URL (for score validation) |
+| `RADARR_API_KEY` | `null` | Radarr API key (Settings → General) |
 
 ### Rename Modes
 
@@ -150,6 +155,46 @@ replace_patterns:
 # Skip renaming if title matches these patterns
 skip_title_patterns:
   - "PROPER"
+
+# ===========================================
+# SCORE VALIDATION - Validate renames via Arr API
+# ===========================================
+validate_custom_format_score: false
+score_validation_policy: "block"  # "block" or "warn"
+```
+
+### Score Validation
+
+Score validation is an optional feature that uses the Sonarr/Radarr API to compare custom format scores before and after renaming. This helps ensure that your rename rules don't accidentally remove information that Sonarr/Radarr uses for matching.
+
+**How it works:**
+1. When a rename is triggered, Groomarr calls the `/api/v3/parse` endpoint with both the original and new name
+2. It compares the `customFormatScore` values returned by the API
+3. Based on the policy, it either blocks or warns if the new name would have a lower score
+
+**Configuration:**
+1. Set the environment variables for Sonarr/Radarr API access
+2. Enable in `rename_rules.yaml`:
+
+```yaml
+validate_custom_format_score: true
+score_validation_policy: "block"  # or "warn"
+```
+
+**Policies:**
+- `block` (default): Skip the rename if the score would decrease
+- `warn`: Log a warning but proceed with the rename anyway
+
+**Example log output:**
+```
+# Score validation passed
+[radarr] Score validation: 'Original.Name' (11200) -> 'New.Name' (11200), change=0, safe=True
+
+# Score decrease blocked
+[radarr] Skipping rename: score would decrease from 11200 to 8500 (-2700)
+
+# API unreachable
+[radarr] Skipping rename: Radarr API unreachable at http://radarr:7878
 ```
 
 ## API Endpoints
@@ -194,6 +239,11 @@ services:
       - QBITTORRENT_USERNAME=admin
       - QBITTORRENT_PASSWORD=your_password
       - RENAME_MODE=torrent_and_folder
+      # Optional: Enable score validation (requires Arr API access)
+      # - SONARR_URL=http://sonarr:8989
+      # - SONARR_API_KEY=your-sonarr-api-key
+      # - RADARR_URL=http://radarr:7878
+      # - RADARR_API_KEY=your-radarr-api-key
     volumes:
       - ./config:/config
     ports:

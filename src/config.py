@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     # Dry Run Mode - logs what would be renamed without making changes
     dry_run: bool = Field(default=False)
 
+    # Sonarr API (optional - for score validation)
+    sonarr_url: str | None = Field(default=None)
+    sonarr_api_key: str | None = Field(default=None)
+
+    # Radarr API (optional - for score validation)
+    radarr_url: str | None = Field(default=None)
+    radarr_api_key: str | None = Field(default=None)
+
     # Timing
     initial_delay: float = Field(default=2.0)
     max_retries: int = Field(default=10)
@@ -72,6 +80,10 @@ class RenameRules:
         self.replace_patterns: dict[str, str] = {}
         self.skip_title_patterns: list[str] = []
 
+        # Score validation settings
+        self.validate_custom_format_score: bool = False
+        self.score_validation_policy: str = "block"  # "block" or "warn"
+
     @classmethod
     def from_yaml(cls, file_path: str) -> "RenameRules":
         """Load rules from YAML file."""
@@ -108,6 +120,12 @@ class RenameRules:
             rules.remove_patterns = data.get("remove_patterns") or []
             rules.replace_patterns = data.get("replace_patterns") or {}
             rules.skip_title_patterns = data.get("skip_title_patterns") or []
+
+            # Load score validation settings
+            rules.validate_custom_format_score = bool(
+                data.get("validate_custom_format_score", False)
+            )
+            rules.score_validation_policy = data.get("score_validation_policy") or "block"
 
         except Exception as e:
             rules.config_error = str(e)
