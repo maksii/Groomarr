@@ -8,12 +8,12 @@ These tests validate:
 - Error handling for API failures
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import httpx
+import pytest
 
 from src.arrapi import ArrClient, ParseResult, ScoreComparison
-
 
 # =============================================================================
 # Fixtures

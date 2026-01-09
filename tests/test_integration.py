@@ -1239,8 +1239,8 @@ class TestScoreValidation:
     @pytest.mark.asyncio
     async def test_validate_rename_score_disabled(self, mock_qbit_client, mock_torrent):
         """When score validation is disabled, rename should proceed without API call."""
-        from src.main import _validate_rename_score
         from src.config import RenameRules
+        from src.main import _validate_rename_score
 
         # Create rules with validation disabled
         rules = RenameRules()
@@ -1259,9 +1259,9 @@ class TestScoreValidation:
     @pytest.mark.asyncio
     async def test_validate_rename_score_enabled_safe(self, mock_arr_client):
         """When score validation passes, rename should proceed."""
-        from src.main import _validate_rename_score
+        from src.arrapi import ParseResult, ScoreComparison
         from src.config import RenameRules
-        from src.arrapi import ScoreComparison, ParseResult
+        from src.main import _validate_rename_score
 
         # Create rules with validation enabled
         rules = RenameRules()
@@ -1296,9 +1296,9 @@ class TestScoreValidation:
     @pytest.mark.asyncio
     async def test_validate_rename_score_block_on_decrease(self, mock_arr_client):
         """When score decreases with block policy, rename should be skipped."""
-        from src.main import _validate_rename_score
+        from src.arrapi import ParseResult, ScoreComparison
         from src.config import RenameRules
-        from src.arrapi import ScoreComparison, ParseResult
+        from src.main import _validate_rename_score
 
         rules = RenameRules()
         rules.validate_custom_format_score = True
@@ -1332,9 +1332,9 @@ class TestScoreValidation:
     @pytest.mark.asyncio
     async def test_validate_rename_score_warn_on_decrease(self, mock_arr_client):
         """When score decreases with warn policy, rename should proceed with warning."""
-        from src.main import _validate_rename_score
+        from src.arrapi import ParseResult, ScoreComparison
         from src.config import RenameRules
-        from src.arrapi import ScoreComparison, ParseResult
+        from src.main import _validate_rename_score
 
         rules = RenameRules()
         rules.validate_custom_format_score = True
@@ -1368,8 +1368,8 @@ class TestScoreValidation:
     @pytest.mark.asyncio
     async def test_validate_rename_score_api_unreachable(self):
         """When Arr API is unreachable, rename should be skipped."""
-        from src.main import _validate_rename_score
         from src.config import RenameRules
+        from src.main import _validate_rename_score
 
         rules = RenameRules()
         rules.validate_custom_format_score = True
@@ -1396,8 +1396,8 @@ class TestScoreValidation:
     @pytest.mark.asyncio
     async def test_validate_rename_score_no_client_configured(self):
         """When Arr client is not configured, rename should be skipped."""
-        from src.main import _validate_rename_score
         from src.config import RenameRules
+        from src.main import _validate_rename_score
 
         rules = RenameRules()
         rules.validate_custom_format_score = True
@@ -1420,9 +1420,9 @@ class TestScoreValidation:
     @pytest.mark.asyncio
     async def test_validate_rename_score_sonarr_source(self, mock_arr_client):
         """Score validation should use Sonarr client for Sonarr webhooks."""
-        from src.main import _validate_rename_score
+        from src.arrapi import ParseResult, ScoreComparison
         from src.config import RenameRules
-        from src.arrapi import ScoreComparison, ParseResult
+        from src.main import _validate_rename_score
 
         rules = RenameRules()
         rules.validate_custom_format_score = True
@@ -1484,6 +1484,7 @@ class TestHealthEndpointWithArrClients:
             "RULES_FILE": str(Path(__file__).parent / "fixtures" / "test_rules.yaml"),
         }):
             from importlib import reload
+
             from src import config
             reload(config)
             from src import main
@@ -1541,6 +1542,7 @@ score_validation_policy: "warn"
         """Settings should have None defaults for Arr API config."""
         with patch.dict(os.environ, {}, clear=True):
             from importlib import reload
+
             from src import config
             reload(config)
 
@@ -1561,6 +1563,7 @@ score_validation_policy: "warn"
             "RADARR_API_KEY": "radarr-key-456",
         }):
             from importlib import reload
+
             from src import config
             reload(config)
 
