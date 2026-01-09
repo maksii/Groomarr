@@ -213,14 +213,42 @@ def reload_rules():
     logger.info("Rules reloaded")
 
 
+class HealthCheckFilter(logging.Filter):
+    """Filter to suppress successful health check logs.
+
+    Filters out:
+    - httpx INFO logs for /api/v3/system/status (Arr API health checks)
+    - uvicorn access logs for successful GET /health requests
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Return False to suppress the log record, True to keep it."""
+        msg = record.getMessage()
+
+        # Filter httpx logs for Arr API health checks (system/status endpoint)
+        if record.name == "httpx" and "/api/v3/system/status" in msg and "200 OK" in msg:
+            return False
+
+        # Filter uvicorn access logs for successful /health requests
+        # Return True (keep) unless it's a successful health check
+        return not (
+            record.name == "uvicorn.access" and "GET /health" in msg and " 200 " in msg
+        )
+
+
 def setup_logging():
     """Configure logging based on settings.
 
     Supports two formats:
     - "text": Human-readable format (default)
     - "json": JSON format for log aggregation systems
+
+    Also applies filters to suppress successful health check logs.
     """
     log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
+
+    # Create health check filter
+    health_filter = HealthCheckFilter()
 
     if settings.log_format.lower() == "json":
         # JSON logging for production/log aggregation
@@ -228,6 +256,7 @@ def setup_logging():
             from pythonjsonlogger import jsonlogger
 
             handler = logging.StreamHandler()
+            handler.addFilter(health_filter)
             formatter = jsonlogger.JsonFormatter(
                 "%(asctime)s %(levelname)s %(name)s %(message)s",
                 datefmt="%Y-%m-%dT%H:%M:%S",
@@ -245,6 +274,9 @@ def setup_logging():
                 datefmt="%Y-%m-%d %H:%M:%S",
             )
             logging.warning("python-json-logger not installed, using text format")
+            # Still apply filter to root logger
+            for handler in logging.getLogger().handlers:
+                handler.addFilter(health_filter)
     else:
         # Human-readable text format (default)
         logging.basicConfig(
@@ -252,3 +284,6 @@ def setup_logging():
             format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
+        # Apply filter to all handlers
+        for handler in logging.getLogger().handlers:
+            handler.addFilter(health_filter)
