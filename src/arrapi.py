@@ -86,9 +86,7 @@ class ArrClient:
                     logger.debug(f"{self.app_type} API connection successful")
                     return True
                 else:
-                    logger.warning(
-                        f"{self.app_type} API returned status {response.status_code}"
-                    )
+                    logger.warning(f"{self.app_type} API returned status {response.status_code}")
                     return False
         except httpx.RequestError as e:
             logger.warning(f"{self.app_type} API connection failed: {e}")
@@ -110,9 +108,7 @@ class ArrClient:
                 logger.debug(f"{self.app_type} API connection successful")
                 return True
             else:
-                logger.warning(
-                    f"{self.app_type} API returned status {response.status_code}"
-                )
+                logger.warning(f"{self.app_type} API returned status {response.status_code}")
                 return False
         except httpx.RequestError as e:
             logger.warning(f"{self.app_type} API connection failed: {e}")
@@ -192,9 +188,7 @@ class ArrClient:
             logger.error(f"[{self.app_type}] Parse API unexpected error: {e}")
             return None
 
-    async def validate_rename(
-        self, original_title: str, new_title: str
-    ) -> ScoreComparison | None:
+    async def validate_rename(self, original_title: str, new_title: str) -> ScoreComparison | None:
         """Compare custom format scores between original and new title.
 
         Args:
@@ -214,9 +208,7 @@ class ArrClient:
 
         new_parse = await self.parse_title(new_title)
         if new_parse is None:
-            logger.warning(
-                f"[{self.app_type}] Failed to parse new title, cannot validate rename"
-            )
+            logger.warning(f"[{self.app_type}] Failed to parse new title, cannot validate rename")
             return None
 
         # Calculate score comparison

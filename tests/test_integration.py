@@ -1279,9 +1279,11 @@ class TestScoreValidation:
         )
         mock_arr_client.validate_rename = AsyncMock(return_value=comparison)
 
-        with patch("src.main.rules", rules), \
-             patch("src.main.radarr_client", mock_arr_client), \
-             patch("src.main.settings") as mock_settings:
+        with (
+            patch("src.main.rules", rules),
+            patch("src.main.radarr_client", mock_arr_client),
+            patch("src.main.settings") as mock_settings,
+        ):
             mock_settings.radarr_url = "http://radarr:7878"
 
             result = await _validate_rename_score(
@@ -1315,9 +1317,11 @@ class TestScoreValidation:
         )
         mock_arr_client.validate_rename = AsyncMock(return_value=comparison)
 
-        with patch("src.main.rules", rules), \
-             patch("src.main.radarr_client", mock_arr_client), \
-             patch("src.main.settings") as mock_settings:
+        with (
+            patch("src.main.rules", rules),
+            patch("src.main.radarr_client", mock_arr_client),
+            patch("src.main.settings") as mock_settings,
+        ):
             mock_settings.radarr_url = "http://radarr:7878"
 
             result = await _validate_rename_score(
@@ -1351,9 +1355,11 @@ class TestScoreValidation:
         )
         mock_arr_client.validate_rename = AsyncMock(return_value=comparison)
 
-        with patch("src.main.rules", rules), \
-             patch("src.main.radarr_client", mock_arr_client), \
-             patch("src.main.settings") as mock_settings:
+        with (
+            patch("src.main.rules", rules),
+            patch("src.main.radarr_client", mock_arr_client),
+            patch("src.main.settings") as mock_settings,
+        ):
             mock_settings.radarr_url = "http://radarr:7878"
 
             result = await _validate_rename_score(
@@ -1379,9 +1385,11 @@ class TestScoreValidation:
         mock_arr_client = MagicMock()
         mock_arr_client.validate_rename = AsyncMock(return_value=None)
 
-        with patch("src.main.rules", rules), \
-             patch("src.main.radarr_client", mock_arr_client), \
-             patch("src.main.settings") as mock_settings:
+        with (
+            patch("src.main.rules", rules),
+            patch("src.main.radarr_client", mock_arr_client),
+            patch("src.main.settings") as mock_settings,
+        ):
             mock_settings.radarr_url = "http://radarr:7878"
 
             result = await _validate_rename_score(
@@ -1403,9 +1411,11 @@ class TestScoreValidation:
         rules.validate_custom_format_score = True
         rules.score_validation_policy = "block"
 
-        with patch("src.main.rules", rules), \
-             patch("src.main.radarr_client", None), \
-             patch("src.main.settings") as mock_settings:
+        with (
+            patch("src.main.rules", rules),
+            patch("src.main.radarr_client", None),
+            patch("src.main.settings") as mock_settings,
+        ):
             mock_settings.radarr_url = None
 
             result = await _validate_rename_score(
@@ -1438,10 +1448,12 @@ class TestScoreValidation:
         )
         mock_arr_client.validate_rename = AsyncMock(return_value=comparison)
 
-        with patch("src.main.rules", rules), \
-             patch("src.main.sonarr_client", mock_arr_client), \
-             patch("src.main.radarr_client", None), \
-             patch("src.main.settings") as mock_settings:
+        with (
+            patch("src.main.rules", rules),
+            patch("src.main.sonarr_client", mock_arr_client),
+            patch("src.main.radarr_client", None),
+            patch("src.main.settings") as mock_settings,
+        ):
             mock_settings.sonarr_url = "http://sonarr:8989"
 
             result = await _validate_rename_score(
@@ -1477,17 +1489,22 @@ class TestHealthEndpointWithArrClients:
         mock_qbit = MagicMock()
         mock_qbit.check_connection = MagicMock(return_value=True)
 
-        with patch.dict(os.environ, {
-            "QBITTORRENT_URL": "http://mock:8080",
-            "QBITTORRENT_USERNAME": "test",
-            "QBITTORRENT_PASSWORD": "test",
-            "RULES_FILE": str(Path(__file__).parent / "fixtures" / "test_rules.yaml"),
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "QBITTORRENT_URL": "http://mock:8080",
+                "QBITTORRENT_USERNAME": "test",
+                "QBITTORRENT_PASSWORD": "test",
+                "RULES_FILE": str(Path(__file__).parent / "fixtures" / "test_rules.yaml"),
+            },
+        ):
             from importlib import reload
 
             from src import config
+
             reload(config)
             from src import main
+
             reload(main)
 
             # Replace clients
@@ -1544,6 +1561,7 @@ score_validation_policy: "warn"
             from importlib import reload
 
             from src import config
+
             reload(config)
 
             # Access settings after reload
@@ -1556,15 +1574,19 @@ score_validation_policy: "warn"
 
     def test_settings_arr_api_from_env(self):
         """Settings should load Arr API config from environment."""
-        with patch.dict(os.environ, {
-            "SONARR_URL": "http://sonarr:8989",
-            "SONARR_API_KEY": "sonarr-key-123",
-            "RADARR_URL": "http://radarr:7878",
-            "RADARR_API_KEY": "radarr-key-456",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "SONARR_URL": "http://sonarr:8989",
+                "SONARR_API_KEY": "sonarr-key-123",
+                "RADARR_URL": "http://radarr:7878",
+                "RADARR_API_KEY": "radarr-key-456",
+            },
+        ):
             from importlib import reload
 
             from src import config
+
             reload(config)
 
             settings = config.Settings()

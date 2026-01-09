@@ -80,9 +80,7 @@ async def lifespan(app: FastAPI):
 
     # Log score validation state
     if rules.validate_custom_format_score:
-        logger.info(
-            f"Score validation enabled (policy: {rules.score_validation_policy})"
-        )
+        logger.info(f"Score validation enabled (policy: {rules.score_validation_policy})")
     else:
         logger.info("Score validation disabled")
 

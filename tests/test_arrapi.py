@@ -138,9 +138,7 @@ class TestCheckConnection:
             result = radarr_client.check_connection()
 
             assert result is True
-            mock_client.get.assert_called_once_with(
-                "http://radarr:7878/api/v3/system/status"
-            )
+            mock_client.get.assert_called_once_with("http://radarr:7878/api/v3/system/status")
 
     def test_check_connection_failure_non_200(self, radarr_client):
         """Check connection should return False for non-200 status."""
@@ -245,9 +243,7 @@ class TestParseTitle:
         """Parse title should return None on request error."""
         with patch.object(radarr_client, "_get_client") as mock_get_client:
             mock_async_client = AsyncMock()
-            mock_async_client.get = AsyncMock(
-                side_effect=httpx.RequestError("Connection refused")
-            )
+            mock_async_client.get = AsyncMock(side_effect=httpx.RequestError("Connection refused"))
             mock_get_client.return_value = mock_async_client
 
             result = await radarr_client.parse_title("Test Title")
