@@ -1,22 +1,23 @@
 """Tests for rename logic."""
 
-import pytest
-import sys
 import os
+import sys
+
+import pytest
 
 # Add src to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.config import RenameRules
 from src.rename import (
     apply_rename_rules,
+    build_episode_identifier,
+    build_new_file_path,
+    extract_episode_identifier,
+    insert_episode_into_name,
+    matches_any,
     sanitize_filename,
     strip_media_extension,
-    matches_any,
-    extract_episode_identifier,
-    build_episode_identifier,
-    insert_episode_into_name,
-    build_new_file_path,
 )
 
 
@@ -24,85 +25,85 @@ class TestStripMediaExtension:
     """Test stripping media file extensions from names."""
 
     def test_strips_mkv_extension(self):
-        assert strip_media_extension('Movie.2024.1080p.mkv') == 'Movie.2024.1080p'
+        assert strip_media_extension("Movie.2024.1080p.mkv") == "Movie.2024.1080p"
 
     def test_strips_mp4_extension(self):
-        assert strip_media_extension('Movie.2024.1080p.mp4') == 'Movie.2024.1080p'
+        assert strip_media_extension("Movie.2024.1080p.mp4") == "Movie.2024.1080p"
 
     def test_strips_avi_extension(self):
-        assert strip_media_extension('Movie.2024.1080p.avi') == 'Movie.2024.1080p'
+        assert strip_media_extension("Movie.2024.1080p.avi") == "Movie.2024.1080p"
 
     def test_strips_mov_extension(self):
-        assert strip_media_extension('Movie.2024.1080p.mov') == 'Movie.2024.1080p'
+        assert strip_media_extension("Movie.2024.1080p.mov") == "Movie.2024.1080p"
 
     def test_strips_ts_extension(self):
-        assert strip_media_extension('Movie.2024.1080p.ts') == 'Movie.2024.1080p'
+        assert strip_media_extension("Movie.2024.1080p.ts") == "Movie.2024.1080p"
 
     def test_strips_m2ts_extension(self):
-        assert strip_media_extension('Movie.2024.1080p.m2ts') == 'Movie.2024.1080p'
+        assert strip_media_extension("Movie.2024.1080p.m2ts") == "Movie.2024.1080p"
 
     def test_case_insensitive_uppercase(self):
-        assert strip_media_extension('Movie.2024.1080p.MKV') == 'Movie.2024.1080p'
+        assert strip_media_extension("Movie.2024.1080p.MKV") == "Movie.2024.1080p"
 
     def test_case_insensitive_mixed(self):
-        assert strip_media_extension('Movie.2024.1080p.Mkv') == 'Movie.2024.1080p'
+        assert strip_media_extension("Movie.2024.1080p.Mkv") == "Movie.2024.1080p"
 
     def test_no_extension_unchanged(self):
-        assert strip_media_extension('Movie.2024.1080p') == 'Movie.2024.1080p'
+        assert strip_media_extension("Movie.2024.1080p") == "Movie.2024.1080p"
 
     def test_non_media_extension_unchanged(self):
         """Non-media extensions should not be stripped."""
-        assert strip_media_extension('Movie.2024.1080p.txt') == 'Movie.2024.1080p.txt'
-        assert strip_media_extension('Movie.2024.1080p.nfo') == 'Movie.2024.1080p.nfo'
-        assert strip_media_extension('Movie.2024.1080p.srt') == 'Movie.2024.1080p.srt'
+        assert strip_media_extension("Movie.2024.1080p.txt") == "Movie.2024.1080p.txt"
+        assert strip_media_extension("Movie.2024.1080p.nfo") == "Movie.2024.1080p.nfo"
+        assert strip_media_extension("Movie.2024.1080p.srt") == "Movie.2024.1080p.srt"
 
     def test_release_group_not_stripped(self):
         """Release groups that look like extensions should not be stripped."""
         # Groups like -MKV or .MKV as group name shouldn't be affected if not at end
-        assert strip_media_extension('Movie.2024.MKV-Group') == 'Movie.2024.MKV-Group'
+        assert strip_media_extension("Movie.2024.MKV-Group") == "Movie.2024.MKV-Group"
 
     def test_webm_extension(self):
-        assert strip_media_extension('Video.2024.1080p.webm') == 'Video.2024.1080p'
+        assert strip_media_extension("Video.2024.1080p.webm") == "Video.2024.1080p"
 
 
 class TestSanitizeFilename:
     """Test filename sanitization."""
 
     def test_removes_invalid_chars(self):
-        assert sanitize_filename('test<>:"/\\|?*.txt') == 'test.txt'
+        assert sanitize_filename('test<>:"/\\|?*.txt') == "test.txt"
 
     def test_collapses_multiple_spaces(self):
-        assert sanitize_filename('test   file   name') == 'test file name'
+        assert sanitize_filename("test   file   name") == "test file name"
 
     def test_trims_whitespace(self):
-        assert sanitize_filename('  test  ') == 'test'
+        assert sanitize_filename("  test  ") == "test"
 
     def test_limits_length(self):
-        long_name = 'a' * 300
+        long_name = "a" * 300
         result = sanitize_filename(long_name)
         assert len(result) == 250
 
     def test_removes_control_characters(self):
-        assert sanitize_filename('test\x00\x1f\x7ffile') == 'testfile'
+        assert sanitize_filename("test\x00\x1f\x7ffile") == "testfile"
 
 
 class TestMatchesAny:
     """Test regex pattern matching."""
 
     def test_matches_simple_pattern(self):
-        assert matches_any('TrackerA indexer', ['TrackerA.*']) is True
+        assert matches_any("TrackerA indexer", ["TrackerA.*"]) is True
 
     def test_no_match(self):
-        assert matches_any('Other tracker', ['TrackerA.*']) is False
+        assert matches_any("Other tracker", ["TrackerA.*"]) is False
 
     def test_case_insensitive(self):
-        assert matches_any('trackera indexer', ['TrackerA.*']) is True
+        assert matches_any("trackera indexer", ["TrackerA.*"]) is True
 
     def test_empty_patterns(self):
-        assert matches_any('anything', []) is False
+        assert matches_any("anything", []) is False
 
     def test_multiple_patterns(self):
-        assert matches_any('IndexerB', ['TrackerA.*', 'Indexer.*']) is True
+        assert matches_any("IndexerB", ["TrackerA.*", "Indexer.*"]) is True
 
 
 class TestApplyRenameRules:
@@ -110,49 +111,49 @@ class TestApplyRenameRules:
 
     def test_no_rules(self):
         rules = RenameRules()
-        result = apply_rename_rules('Original Name', rules)
-        assert result == 'Original Name'
+        result = apply_rename_rules("Original Name", rules)
+        assert result == "Original Name"
 
     def test_add_prefix(self):
         rules = RenameRules()
-        rules.prefix = '[AUTO] '
-        result = apply_rename_rules('Movie Name', rules)
-        assert result == '[AUTO] Movie Name'
+        rules.prefix = "[AUTO] "
+        result = apply_rename_rules("Movie Name", rules)
+        assert result == "[AUTO] Movie Name"
 
     def test_add_suffix(self):
         rules = RenameRules()
-        rules.suffix = ' [Renamed]'
-        result = apply_rename_rules('Movie Name', rules)
-        assert result == 'Movie Name [Renamed]'
+        rules.suffix = " [Renamed]"
+        result = apply_rename_rules("Movie Name", rules)
+        assert result == "Movie Name [Renamed]"
 
     def test_remove_pattern(self):
         rules = RenameRules()
-        rules.remove_patterns = [r'-\w+$']  # Remove release group
-        result = apply_rename_rules('Movie.2024.1080p.WEB-GroupX', rules)
-        assert result == 'Movie.2024.1080p.WEB'
+        rules.remove_patterns = [r"-\w+$"]  # Remove release group
+        result = apply_rename_rules("Movie.2024.1080p.WEB-GroupX", rules)
+        assert result == "Movie.2024.1080p.WEB"
 
     def test_replace_pattern(self):
         rules = RenameRules()
-        rules.replace_patterns = {r'\.': ' '}  # Dots to spaces
-        result = apply_rename_rules('Movie.Name.2024', rules)
-        assert result == 'Movie Name 2024'
+        rules.replace_patterns = {r"\.": " "}  # Dots to spaces
+        result = apply_rename_rules("Movie.Name.2024", rules)
+        assert result == "Movie Name 2024"
 
     def test_skip_pattern(self):
         rules = RenameRules()
-        rules.remove_patterns = [r'-\w+$']
-        rules.skip_title_patterns = ['PROPER']
-        
+        rules.remove_patterns = [r"-\w+$"]
+        rules.skip_title_patterns = ["PROPER"]
+
         # Should NOT be modified because of skip pattern
-        result = apply_rename_rules('Movie.2024.PROPER-GROUP', rules)
-        assert result == 'Movie.2024.PROPER-GROUP'
+        result = apply_rename_rules("Movie.2024.PROPER-GROUP", rules)
+        assert result == "Movie.2024.PROPER-GROUP"
 
     def test_combined_rules(self):
         rules = RenameRules()
-        rules.remove_patterns = [r'\[.*?\]', r'-\w+$']
-        rules.replace_patterns = {r'\.': ' ', r'\s+': ' '}
-        
-        result = apply_rename_rules('[TAG] Movie.Name.2024.1080p-GroupX', rules)
-        assert result == 'Movie Name 2024 1080p'
+        rules.remove_patterns = [r"\[.*?\]", r"-\w+$"]
+        rules.replace_patterns = {r"\.": " ", r"\s+": " "}
+
+        result = apply_rename_rules("[TAG] Movie.Name.2024.1080p-GroupX", rules)
+        assert result == "Movie Name 2024 1080p"
 
 
 class TestRenameRulesFromSampleData:
@@ -161,35 +162,35 @@ class TestRenameRulesFromSampleData:
     def test_radarr_release_title(self):
         """Test with actual release title from a Radarr grab."""
         rules = RenameRules()
-        rules.remove_patterns = [r'-\w+$']  # Remove release group
-        
-        original = 'Example Movie 2020 DE 4K Remaster BluRay 1080p ENG H.265-ReleaseGrp'
+        rules.remove_patterns = [r"-\w+$"]  # Remove release group
+
+        original = "Example Movie 2020 DE 4K Remaster BluRay 1080p ENG H.265-ReleaseGrp"
         result = apply_rename_rules(original, rules)
-        
-        assert result == 'Example Movie 2020 DE 4K Remaster BluRay 1080p ENG H.265'
-        assert 'ReleaseGrp' not in result
+
+        assert result == "Example Movie 2020 DE 4K Remaster BluRay 1080p ENG H.265"
+        assert "ReleaseGrp" not in result
 
     def test_clean_release_title(self):
         """Test cleaning up a release title with multiple rules."""
         rules = RenameRules()
         rules.remove_patterns = [
-            r'\[.*?\]',       # Remove bracketed tags
-            r'-\w+$',         # Remove release group
+            r"\[.*?\]",  # Remove bracketed tags
+            r"-\w+$",  # Remove release group
         ]
         rules.replace_patterns = {
-            r'\.': ' ',       # Dots to spaces
-            r'\s+': ' ',      # Multiple spaces to single
+            r"\.": " ",  # Dots to spaces
+            r"\s+": " ",  # Multiple spaces to single
         }
-        
-        original = '[TAG] Movie.Name.2024.1080p.HEVC.x265-GroupX'
+
+        original = "[TAG] Movie.Name.2024.1080p.HEVC.x265-GroupX"
         result = apply_rename_rules(original, rules)
-        
-        assert result == 'Movie Name 2024 1080p HEVC x265'
+
+        assert result == "Movie Name 2024 1080p HEVC x265"
 
 
 class TestReleaseNameWithExtension:
     """Test handling of release names that include file extensions.
-    
+
     This handles the case when users configure Sonarr/Radarr to use
     filenames instead of release names, resulting in extensions being
     included in the release title.
@@ -198,56 +199,56 @@ class TestReleaseNameWithExtension:
     def test_release_with_mkv_extension(self):
         """Release title with .mkv extension should have it stripped."""
         rules = RenameRules()
-        original = 'Movie.2024.1080p.WEB-DL.x264-Group.mkv'
+        original = "Movie.2024.1080p.WEB-DL.x264-Group.mkv"
         result = apply_rename_rules(original, rules)
-        
-        assert not result.endswith('.mkv')
-        assert result == 'Movie.2024.1080p.WEB-DL.x264-Group'
+
+        assert not result.endswith(".mkv")
+        assert result == "Movie.2024.1080p.WEB-DL.x264-Group"
 
     def test_release_with_mp4_extension(self):
         """Release title with .mp4 extension should have it stripped."""
         rules = RenameRules()
-        original = 'Movie.2024.1080p.WEB-DL.x264-Group.mp4'
+        original = "Movie.2024.1080p.WEB-DL.x264-Group.mp4"
         result = apply_rename_rules(original, rules)
-        
-        assert not result.endswith('.mp4')
-        assert result == 'Movie.2024.1080p.WEB-DL.x264-Group'
+
+        assert not result.endswith(".mp4")
+        assert result == "Movie.2024.1080p.WEB-DL.x264-Group"
 
     def test_release_with_extension_and_rules(self):
         """Extension stripping works with other rename rules."""
         rules = RenameRules()
-        rules.replace_patterns = {r'\.': ' ', r'\s+': ' '}
-        
-        original = 'Movie.2024.1080p.WEB-DL.mkv'
+        rules.replace_patterns = {r"\.": " ", r"\s+": " "}
+
+        original = "Movie.2024.1080p.WEB-DL.mkv"
         result = apply_rename_rules(original, rules)
-        
-        assert not result.endswith('.mkv')
-        assert result == 'Movie 2024 1080p WEB-DL'
+
+        assert not result.endswith(".mkv")
+        assert result == "Movie 2024 1080p WEB-DL"
 
     def test_release_with_uppercase_extension(self):
         """Uppercase extensions should also be stripped."""
         rules = RenameRules()
-        original = 'Movie.2024.1080p.WEB-DL.x264-Group.MKV'
+        original = "Movie.2024.1080p.WEB-DL.x264-Group.MKV"
         result = apply_rename_rules(original, rules)
-        
-        assert not result.upper().endswith('.MKV')
-        assert result == 'Movie.2024.1080p.WEB-DL.x264-Group'
+
+        assert not result.upper().endswith(".MKV")
+        assert result == "Movie.2024.1080p.WEB-DL.x264-Group"
 
     def test_sonarr_single_file_scenario(self):
         """Test Sonarr scenario where single file is grabbed by filename.
-        
+
         When user configures Sonarr to grab by filename instead of release name,
         the release title may include the extension.
         """
         rules = RenameRules()
-        rules.replace_patterns = {r'\.': ' ', r'\s+': ' '}
-        
+        rules.replace_patterns = {r"\.": " ", r"\s+": " "}
+
         # Simulates: User grabs "Series.S01E05.1080p.WEB.mkv" as filename
-        original = 'Series.S01E05.1080p.WEB.mkv'
+        original = "Series.S01E05.1080p.WEB.mkv"
         result = apply_rename_rules(original, rules)
-        
-        assert not result.endswith('.mkv')
-        assert result == 'Series S01E05 1080p WEB'
+
+        assert not result.endswith(".mkv")
+        assert result == "Series S01E05 1080p WEB"
 
     def test_no_duplicate_extension_in_file_path(self):
         """Ensure no duplicate extension when building file path."""
@@ -255,13 +256,13 @@ class TestReleaseNameWithExtension:
         old_path = "SeriesFolder/Series.S01E05.1080p.WEB.mkv"
         new_name = "Series S01 1080p WEB"  # Already processed (no extension)
         root_folder = "SeriesFolder"
-        
+
         result = build_new_file_path(old_path, new_name, root_folder)
-        
+
         # Should have exactly one .mkv extension
-        assert result.endswith('.mkv')
-        assert not result.endswith('.mkv.mkv')
-        assert result.count('.mkv') == 1
+        assert result.endswith(".mkv")
+        assert not result.endswith(".mkv.mkv")
+        assert result.count(".mkv") == 1
 
 
 class TestExtractEpisodeIdentifier:
@@ -366,7 +367,7 @@ class TestBuildNewFilePathTVSeries:
 
     def test_user_scenario_preserve_episode(self):
         """Test the user's specific scenario.
-        
+
         release name: SeriesX S01 IT WEBDL 1080p ReleaseGroup
         original file: SeriesX 2025 S01 E02 webdl.mkv
         expected: SeriesX S01E02 IT WEBDL 1080p ReleaseGroup.mkv
@@ -374,19 +375,22 @@ class TestBuildNewFilePathTVSeries:
         old_path = "SeriesX S01 2025/SeriesX 2025 S01 E02 webdl.mkv"
         new_name = "SeriesX S01 IT WEBDL 1080p ReleaseGroup"
         root_folder = "SeriesX S01 2025"
-        
+
         result = build_new_file_path(old_path, new_name, root_folder)
-        
-        assert result == "SeriesX S01 IT WEBDL 1080p ReleaseGroup/SeriesX S01E02 IT WEBDL 1080p ReleaseGroup.mkv"
+
+        assert (
+            result
+            == "SeriesX S01 IT WEBDL 1080p ReleaseGroup/SeriesX S01E02 IT WEBDL 1080p ReleaseGroup.mkv"
+        )
 
     def test_standard_episode_format(self):
         """Test with standard S01E01 format in original file."""
         old_path = "Series.Folder/Series.S01E05.Episode.Title.mkv"
         new_name = "SeriesName S01 1080p WEBDL"
         root_folder = "Series.Folder"
-        
+
         result = build_new_file_path(old_path, new_name, root_folder)
-        
+
         assert "S01E05" in result
         assert result.endswith(".mkv")
 
@@ -395,9 +399,9 @@ class TestBuildNewFilePathTVSeries:
         old_path = "SeriesFolder/Series S02 E10 720p.mkv"
         new_name = "SeriesName S02 720p WEB"
         root_folder = "SeriesFolder"
-        
+
         result = build_new_file_path(old_path, new_name, root_folder)
-        
+
         assert "S02E10" in result
 
     def test_ep_episode_format(self):
@@ -405,9 +409,9 @@ class TestBuildNewFilePathTVSeries:
         old_path = "SeriesFolder/Series S01EP08 HDRip.mkv"
         new_name = "SeriesName S01 HDRip 720p"
         root_folder = "SeriesFolder"
-        
+
         result = build_new_file_path(old_path, new_name, root_folder)
-        
+
         # EP should be normalized to E
         assert "S01E08" in result
 
@@ -416,9 +420,9 @@ class TestBuildNewFilePathTVSeries:
         old_path = "Movie.Folder/Movie.2024.1080p.BluRay.mkv"
         new_name = "Movie Name 2024 1080p BluRay"
         root_folder = "Movie.Folder"
-        
+
         result = build_new_file_path(old_path, new_name, root_folder)
-        
+
         assert result == "Movie Name 2024 1080p BluRay/Movie Name 2024 1080p BluRay.mkv"
         assert "S0" not in result  # No season/episode added
 
@@ -427,9 +431,9 @@ class TestBuildNewFilePathTVSeries:
         old_path = "Series.S01E03.Episode.mkv"
         new_name = "SeriesName S01 1080p"
         root_folder = None
-        
+
         result = build_new_file_path(old_path, new_name, root_folder)
-        
+
         assert "S01E03" in result
         assert result.endswith(".mkv")
 
@@ -438,9 +442,9 @@ class TestBuildNewFilePathTVSeries:
         old_path = "SeriesFolder/Season 1/Series S01E05.mkv"
         new_name = "SeriesName S01 1080p"
         root_folder = "SeriesFolder"
-        
+
         result = build_new_file_path(old_path, new_name, root_folder)
-        
+
         assert "SeriesName S01 1080p/Season 1/" in result
         assert "S01E05" in result
 
@@ -448,11 +452,11 @@ class TestBuildNewFilePathTVSeries:
         """Test that different episodes get different names."""
         new_name = "SeriesX S01 IT WEBDL 1080p"
         root_folder = "SeriesFolder"
-        
+
         result_ep1 = build_new_file_path("SeriesFolder/Series S01E01.mkv", new_name, root_folder)
         result_ep2 = build_new_file_path("SeriesFolder/Series S01E02.mkv", new_name, root_folder)
         result_ep3 = build_new_file_path("SeriesFolder/Series S01 E03.mkv", new_name, root_folder)
-        
+
         assert "S01E01" in result_ep1
         assert "S01E02" in result_ep2
         assert "S01E03" in result_ep3
@@ -460,5 +464,5 @@ class TestBuildNewFilePathTVSeries:
         assert result_ep1 != result_ep2 != result_ep3
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
