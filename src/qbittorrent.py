@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from qbittorrentapi import Client
 from qbittorrentapi.exceptions import APIConnectionError, LoginFailed
@@ -17,7 +17,7 @@ class QBitClient:
         self.url = url
         self.username = username
         self.password = password
-        self._client: Optional[Client] = None
+        self._client: Client | None = None
 
     def _get_client(self) -> Client:
         """Get or create qBittorrent client with lazy connection."""
@@ -42,20 +42,37 @@ class QBitClient:
             self._client = None
             return self._get_client()
 
+    def check_connection(self) -> bool:
+        """Check if qBittorrent is reachable.
+
+        Returns:
+            True if connected, False otherwise
+        """
+        try:
+            client = self._get_client()
+            client.app_version()
+            return True
+        except Exception:
+            return False
+
     async def wait_for_torrent(
         self,
         torrent_hash: str,
         initial_delay: float,
         max_retries: int,
         retry_delay: float,
-    ) -> Optional[Dict[str, Any]]:
-        """Poll for torrent with retry logic.
+        use_exponential_backoff: bool = True,
+        max_delay: float = 60.0,
+    ) -> dict[str, Any] | None:
+        """Poll for torrent with retry logic and exponential backoff.
 
         Args:
             torrent_hash: The torrent info hash to look for
             initial_delay: Seconds to wait before first attempt
             max_retries: Maximum number of retry attempts
-            retry_delay: Seconds between retries
+            retry_delay: Base seconds between retries
+            use_exponential_backoff: If True, delay doubles each attempt
+            max_delay: Maximum delay between retries (cap for exponential backoff)
 
         Returns:
             Torrent info dict if found, None otherwise
@@ -73,14 +90,12 @@ class QBitClient:
                 if torrents:
                     torrent = torrents[0]
                     logger.info(
-                        f"Found torrent {hash_short}... "
-                        f"name='{torrent.name}' state={torrent.state}"
+                        f"Found torrent {hash_short}... name='{torrent.name}' state={torrent.state}"
                     )
                     return torrent
 
                 logger.debug(
-                    f"Torrent {hash_short}... not found, "
-                    f"attempt {attempt + 1}/{max_retries}"
+                    f"Torrent {hash_short}... not found, attempt {attempt + 1}/{max_retries}"
                 )
 
             except Exception as e:
@@ -90,14 +105,17 @@ class QBitClient:
                 )
 
             if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
+                # Calculate delay with optional exponential backoff
+                if use_exponential_backoff:
+                    delay = min(retry_delay * (2**attempt), max_delay)
+                else:
+                    delay = retry_delay
+                await asyncio.sleep(delay)
 
-        logger.warning(
-            f"Torrent {hash_short}... not found after {max_retries} attempts"
-        )
+        logger.warning(f"Torrent {hash_short}... not found after {max_retries} attempts")
         return None
 
-    def get_torrent_info(self, torrent_hash: str) -> Optional[Dict[str, Any]]:
+    def get_torrent_info(self, torrent_hash: str) -> dict[str, Any] | None:
         """Get torrent information by hash.
 
         Args:
@@ -114,7 +132,7 @@ class QBitClient:
             logger.error(f"Error getting torrent info: {e}")
             return None
 
-    def get_files(self, torrent_hash: str) -> List[Dict[str, Any]]:
+    def get_files(self, torrent_hash: str) -> list[dict[str, Any]]:
         """Get list of files in a torrent.
 
         Args:
@@ -165,9 +183,7 @@ class QBitClient:
             client.torrents_rename_folder(
                 torrent_hash=torrent_hash, old_path=old_path, new_path=new_path
             )
-            logger.info(
-                f"Renamed folder in {torrent_hash[:8]}...: '{old_path}' -> '{new_path}'"
-            )
+            logger.info(f"Renamed folder in {torrent_hash[:8]}...: '{old_path}' -> '{new_path}'")
             return True
         except Exception as e:
             logger.error(f"Error renaming folder: {e}")
@@ -189,9 +205,7 @@ class QBitClient:
             client.torrents_rename_file(
                 torrent_hash=torrent_hash, old_path=old_path, new_path=new_path
             )
-            logger.info(
-                f"Renamed file in {torrent_hash[:8]}...: '{old_path}' -> '{new_path}'"
-            )
+            logger.info(f"Renamed file in {torrent_hash[:8]}...: '{old_path}' -> '{new_path}'")
             return True
         except Exception as e:
             logger.error(f"Error renaming file: {e}")

@@ -1,5 +1,13 @@
 # Groomarr
 
+![CI](https://github.com/maksii/groomarr/actions/workflows/docker.yml/badge.svg)
+![Tests](https://github.com/maksii/groomarr/actions/workflows/test.yml/badge.svg)
+![Docker Pulls](https://img.shields.io/docker/pulls/maksii/groomarr)
+![Python](https://img.shields.io/badge/python-3.11+-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+Fixes infinite download loops in Sonarr and Radarr by renaming torrents to match their original release titles, ensuring that metadata (Custom Formats, Release Groups) lost during filename parsing is preserved.
+
 A webhook service that "grooms" rough releases into presentable ones — automatically renaming torrents in qBittorrent when Sonarr or Radarr grabs a release.
 
 ## Features
@@ -58,11 +66,13 @@ docker-compose up -d
 | `QBITTORRENT_USERNAME` | `admin` | qBittorrent username |
 | `QBITTORRENT_PASSWORD` | `adminadmin` | qBittorrent password |
 | `API_PORT` | `8000` | Port for webhook API |
-| `LOG_LEVEL` | `INFO` | Logging level |
+| `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `LOG_FORMAT` | `text` | Log format: `text` or `json` (for log aggregation) |
 | `RENAME_MODE` | `torrent_and_folder` | What to rename (see below) |
+| `DRY_RUN` | `false` | If `true`, logs what would be renamed without making changes |
 | `INITIAL_DELAY` | `2` | Seconds to wait before first torrent lookup |
 | `MAX_RETRIES` | `10` | Max attempts to find torrent |
-| `RETRY_DELAY` | `3` | Seconds between retries |
+| `RETRY_DELAY` | `3` | Base seconds between retries (uses exponential backoff) |
 
 ### Rename Modes
 
@@ -149,8 +159,28 @@ skip_title_patterns:
 | `/health` | GET | Health check |
 | `/webhook/radarr` | POST | Radarr webhook receiver |
 | `/webhook/sonarr` | POST | Sonarr webhook receiver |
+| `/rename/manual` | POST | Manually rename a torrent by hash |
 | `/reload` | GET | Reload rename rules |
 | `/docs` | GET | Swagger API documentation |
+
+### Manual Rename Endpoint
+
+The `/rename/manual` endpoint allows direct renaming of torrents without a webhook event:
+
+```bash
+curl -X POST http://localhost:8000/rename/manual \
+  -H "Content-Type: application/json" \
+  -d '{
+    "torrent_hash": "AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+    "new_name": "Movie.2024.1080p.BluRay.x264-GROUP",
+    "mode": "torrent_and_folder"
+  }'
+```
+
+**Parameters:**
+- `torrent_hash` (required): The torrent info hash
+- `new_name` (required): New name to apply
+- `mode` (optional): Rename mode (default: `torrent_and_folder`)
 
 ## Example docker-compose.yml
 
@@ -186,15 +216,38 @@ networks:
 5. Rename rules are applied to generate new name
 6. Torrent/folder/files are renamed based on configured mode
 
-```
-Sonarr/Radarr Grab → Webhook → Validate → Filter → Queue Task → Return 200
-                                                          ↓
-                                                    Background:
-                                                    Wait for torrent
-                                                          ↓
-                                                    Apply rename rules
-                                                          ↓
-                                                    Rename in qBittorrent
+```mermaid
+flowchart LR
+    subgraph arr [Sonarr/Radarr]
+        A[Grab Release]
+    end
+    
+    subgraph groomarr [Groomarr]
+        B[Receive Webhook]
+        C{Validate & Filter}
+        D[Queue Task]
+        E[Return 200]
+    end
+    
+    subgraph background [Background Task]
+        F[Wait for Torrent]
+        G[Apply Rename Rules]
+        H[Rename in qBit]
+    end
+    
+    subgraph qbit [qBittorrent]
+        I[Torrent Renamed]
+    end
+    
+    A -->|POST webhook| B
+    B --> C
+    C -->|Pass| D
+    C -->|Fail| E
+    D --> E
+    D -.->|async| F
+    F --> G
+    G --> H
+    H --> I
 ```
 
 ## Troubleshooting
@@ -247,6 +300,17 @@ pytest tests/ -v
 - qBittorrent v4.2.1+ (for file renaming support)
 - Sonarr v3+ / Radarr v3+
 - Docker (recommended)
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Run the tests (`pytest tests/ -v`)
+4. Commit your changes (`git commit -m 'Add amazing feature'`)
+5. Push to the branch (`git push origin feature/amazing-feature`)
+6. Open a Pull Request
 
 ## License
 

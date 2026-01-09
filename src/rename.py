@@ -3,7 +3,7 @@
 import logging
 import re
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 from .config import RenameRules
 from .models import RadarrWebhook, SonarrWebhook
@@ -27,7 +27,7 @@ class RenameMode(str, Enum):
 # =============================================================================
 
 
-def matches_any(value: str, patterns: List[str]) -> bool:
+def matches_any(value: str, patterns: list[str]) -> bool:
     """Check if value matches any regex pattern (case-insensitive).
 
     Args:
@@ -42,9 +42,7 @@ def matches_any(value: str, patterns: List[str]) -> bool:
     return any(re.search(p, value, re.IGNORECASE) for p in patterns)
 
 
-def should_process(
-    payload: Union[RadarrWebhook, SonarrWebhook], rules: RenameRules
-) -> Tuple[bool, str]:
+def should_process(payload: RadarrWebhook | SonarrWebhook, rules: RenameRules) -> tuple[bool, str]:
     """Check if webhook should be processed based on trigger filters.
 
     Args:
@@ -124,9 +122,26 @@ def strip_media_extension(name: str) -> str:
     """
     # Common video/media file extensions (case-insensitive)
     media_extensions = (
-        ".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm",
-        ".m4v", ".mpeg", ".mpg", ".ts", ".m2ts", ".vob", ".divx",
-        ".xvid", ".3gp", ".ogv", ".rm", ".rmvb", ".asf",
+        ".mkv",
+        ".mp4",
+        ".avi",
+        ".mov",
+        ".wmv",
+        ".flv",
+        ".webm",
+        ".m4v",
+        ".mpeg",
+        ".mpg",
+        ".ts",
+        ".m2ts",
+        ".vob",
+        ".divx",
+        ".xvid",
+        ".3gp",
+        ".ogv",
+        ".rm",
+        ".rmvb",
+        ".asf",
     )
 
     name_lower = name.lower()
@@ -212,19 +227,13 @@ def apply_rename_rules(original_name: str, rules: RenameRules) -> str:
 
 # Pattern to match episode identifiers: S01E01, S01 E01, S01EP01, etc.
 # Captures: season number, optional space, episode marker (E or EP), episode number
-EPISODE_PATTERN = re.compile(
-    r"S(\d+)\s*(E(?:P)?)\s*(\d+)",
-    re.IGNORECASE
-)
+EPISODE_PATTERN = re.compile(r"S(\d+)\s*(E(?:P)?)\s*(\d+)", re.IGNORECASE)
 
 # Pattern to match season-only identifier: S01, S02, etc.
-SEASON_ONLY_PATTERN = re.compile(
-    r"S(\d+)(?!\s*E)",
-    re.IGNORECASE
-)
+SEASON_ONLY_PATTERN = re.compile(r"S(\d+)(?!\s*E)", re.IGNORECASE)
 
 
-def extract_episode_identifier(filename: str) -> Optional[Tuple[str, str, str]]:
+def extract_episode_identifier(filename: str) -> tuple[str, str, str] | None:
     """Extract episode identifier from a filename.
 
     Matches patterns like: S01E01, S01 E01, S01EP01, s01e01, S01 EP01, etc.
@@ -261,9 +270,7 @@ def build_episode_identifier(season: str, ep_marker: str, episode: str) -> str:
     return f"S{season}{marker}{episode}"
 
 
-def insert_episode_into_name(
-    new_name: str, episode_info: Tuple[str, str, str]
-) -> str:
+def insert_episode_into_name(new_name: str, episode_info: tuple[str, str, str]) -> str:
     """Insert episode identifier into the new name.
 
     If the new name has a season-only pattern (e.g., "S01"), replace it
@@ -323,7 +330,7 @@ def insert_episode_into_name(
 # =============================================================================
 
 
-def get_root_folder(files: List[Dict[str, Any]]) -> Optional[str]:
+def get_root_folder(files: list[dict[str, Any]]) -> str | None:
     """Get the root folder name from torrent files.
 
     Args:
@@ -349,9 +356,7 @@ def get_root_folder(files: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
-def build_new_file_path(
-    old_path: str, new_name: str, root_folder: Optional[str]
-) -> str:
+def build_new_file_path(old_path: str, new_name: str, root_folder: str | None) -> str:
     """Build new file path based on rename.
 
     For TV series files, preserves the episode identifier (S01E02, etc.)
@@ -380,9 +385,7 @@ def build_new_file_path(
     if episode_info:
         # TV series: insert episode identifier into the new name
         file_base_name = insert_episode_into_name(new_name, episode_info)
-        logger.debug(
-            f"Preserved episode info: {original_filename} -> {file_base_name}{ext}"
-        )
+        logger.debug(f"Preserved episode info: {original_filename} -> {file_base_name}{ext}")
     else:
         # Movie or no episode info: use new name as-is
         file_base_name = new_name

@@ -1,12 +1,12 @@
 """FastAPI application for Groomarr webhook service."""
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from . import __version__
 from .config import reload_rules, rules, settings, setup_logging
 from .models import (
     ManualRenameRequest,
@@ -31,9 +31,11 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     global qbit_client
 
-    logger.info("Starting Groomarr service")
+    logger.info(f"Starting Groomarr service v{__version__}")
     logger.info(f"qBittorrent URL: {settings.qbittorrent_url}")
     logger.info(f"Rename mode: {settings.rename_mode}")
+    if settings.dry_run:
+        logger.warning("DRY RUN MODE ENABLED - no actual renames will be performed")
 
     # Log config file state
     _log_config_state()
@@ -171,7 +173,7 @@ def _log_config_state():
 app = FastAPI(
     title="Groomarr",
     description="Grooms rough releases into presentable ones — webhook service for renaming torrents in qBittorrent based on Sonarr/Radarr events",
-    version="1.0.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
@@ -207,9 +209,7 @@ async def process_rename_task(
     )
 
     if not torrent:
-        logger.warning(
-            f"[{source}] Torrent {hash_short}... not found after waiting, giving up"
-        )
+        logger.warning(f"[{source}] Torrent {hash_short}... not found after waiting, giving up")
         return
 
     # Apply rename rules to get new name
@@ -224,10 +224,16 @@ async def process_rename_task(
     try:
         mode = RenameMode(settings.rename_mode)
     except ValueError:
-        logger.warning(
-            f"Invalid rename mode '{settings.rename_mode}', using torrent_and_folder"
-        )
+        logger.warning(f"Invalid rename mode '{settings.rename_mode}', using torrent_and_folder")
         mode = RenameMode.TORRENT_AND_FOLDER
+
+    # Check for dry run mode
+    if settings.dry_run:
+        logger.info(
+            f"[{source}] DRY RUN: Would rename '{media_title}' ({hash_short}...) "
+            f"to '{new_name}' with mode={mode.value}"
+        )
+        return
 
     # Perform rename
     success = await perform_rename(
@@ -250,8 +256,18 @@ async def process_rename_task(
 
 @app.get("/health")
 async def health():
-    """Health check endpoint for Docker."""
-    return {"status": "ok"}
+    """Health check endpoint for Docker.
+
+    Returns service status including qBittorrent connectivity.
+    """
+    qbit_connected = qbit_client.check_connection() if qbit_client else False
+
+    return {
+        "status": "ok" if qbit_connected else "degraded",
+        "version": __version__,
+        "qbittorrent": "connected" if qbit_connected else "disconnected",
+        "dry_run": settings.dry_run,
+    }
 
 
 @app.get("/reload")
@@ -274,7 +290,9 @@ async def manual_rename(request: ManualRenameRequest):
     Returns:
         ManualRenameResponse with status and details
     """
-    hash_short = request.torrent_hash[:8] if len(request.torrent_hash) >= 8 else request.torrent_hash
+    hash_short = (
+        request.torrent_hash[:8] if len(request.torrent_hash) >= 8 else request.torrent_hash
+    )
     logger.info(f"[manual] Received rename request for {hash_short}... mode={request.mode}")
 
     # Validate rename mode
@@ -514,9 +532,7 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
         media_title=f"{series_title} {episode_info}",
     )
 
-    logger.info(
-        f"[sonarr] Queued rename for '{series_title}' {episode_info} ({hash_short}...)"
-    )
+    logger.info(f"[sonarr] Queued rename for '{series_title}' {episode_info} ({hash_short}...)")
     return WebhookResponse(
         status="queued",
         torrent_hash=download_id,

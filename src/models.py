@@ -1,9 +1,6 @@
 """Pydantic models for Sonarr and Radarr webhook payloads."""
 
-from typing import List, Optional
-
 from pydantic import BaseModel, Field
-
 
 # =============================================================================
 # Radarr Models
@@ -15,9 +12,9 @@ class MovieInfo(BaseModel):
 
     id: int
     title: str
-    year: Optional[int] = None
-    tmdbId: Optional[int] = None
-    imdbId: Optional[str] = None
+    year: int | None = None
+    tmdbId: int | None = None
+    imdbId: str | None = None
 
 
 class RadarrRelease(BaseModel):
@@ -25,11 +22,11 @@ class RadarrRelease(BaseModel):
 
     releaseTitle: str
     quality: str
-    releaseGroup: Optional[str] = None
-    size: Optional[int] = None
-    indexer: Optional[str] = None
-    customFormats: Optional[List[str]] = None
-    customFormatScore: Optional[int] = None
+    releaseGroup: str | None = None
+    size: int | None = None
+    indexer: str | None = None
+    customFormats: list[str] | None = None
+    customFormatScore: int | None = None
 
 
 class RadarrWebhook(BaseModel):
@@ -41,8 +38,8 @@ class RadarrWebhook(BaseModel):
     downloadId: str  # Top-level - this is the torrent hash
     downloadClient: str
     downloadClientType: str
-    instanceName: Optional[str] = None
-    applicationUrl: Optional[str] = None
+    instanceName: str | None = None
+    applicationUrl: str | None = None
 
 
 # =============================================================================
@@ -55,11 +52,11 @@ class SeriesInfo(BaseModel):
 
     id: int
     title: str
-    path: Optional[str] = None
-    tvdbId: Optional[int] = None
-    tvMazeId: Optional[int] = None
-    imdbId: Optional[str] = None
-    type: Optional[str] = None
+    path: str | None = None
+    tvdbId: int | None = None
+    tvMazeId: int | None = None
+    imdbId: str | None = None
+    type: str | None = None
 
 
 class EpisodeInfo(BaseModel):
@@ -68,9 +65,9 @@ class EpisodeInfo(BaseModel):
     id: int
     episodeNumber: int
     seasonNumber: int
-    title: Optional[str] = None
-    airDate: Optional[str] = None
-    airDateUtc: Optional[str] = None
+    title: str | None = None
+    airDate: str | None = None
+    airDateUtc: str | None = None
 
 
 class SonarrRelease(BaseModel):
@@ -82,12 +79,12 @@ class SonarrRelease(BaseModel):
 
     title: str = Field(alias="releaseTitle", default="")  # Can be either
     quality: str
-    releaseGroup: Optional[str] = None
-    size: Optional[int] = None
-    indexer: Optional[str] = None
-    downloadId: Optional[str] = None  # In Sonarr, downloadId is here
-    customFormats: Optional[List[str]] = None
-    customFormatScore: Optional[int] = None
+    releaseGroup: str | None = None
+    size: int | None = None
+    indexer: str | None = None
+    downloadId: str | None = None  # In Sonarr, downloadId is here
+    customFormats: list[str] | None = None
+    customFormatScore: int | None = None
 
     class Config:
         populate_by_name = True
@@ -98,15 +95,15 @@ class SonarrWebhook(BaseModel):
 
     eventType: str
     series: SeriesInfo
-    episodes: List[EpisodeInfo] = []
+    episodes: list[EpisodeInfo] = []
     release: SonarrRelease
-    downloadClient: Optional[str] = None
-    downloadClientType: Optional[str] = None
-    downloadId: Optional[str] = None  # Sonarr v4+ puts downloadId at top level
-    instanceName: Optional[str] = None
-    applicationUrl: Optional[str] = None
+    downloadClient: str | None = None
+    downloadClientType: str | None = None
+    downloadId: str | None = None  # Sonarr v4+ puts downloadId at top level
+    instanceName: str | None = None
+    applicationUrl: str | None = None
 
-    def get_download_id(self) -> Optional[str]:
+    def get_download_id(self) -> str | None:
         """Get download ID from payload.
 
         Sonarr v4+ puts downloadId at the top level (like Radarr).
@@ -129,8 +126,8 @@ class WebhookResponse(BaseModel):
     """Response model for webhook endpoints."""
 
     status: str
-    reason: Optional[str] = None
-    torrent_hash: Optional[str] = None
+    reason: str | None = None
+    torrent_hash: str | None = None
 
 
 # =============================================================================
@@ -141,12 +138,8 @@ class WebhookResponse(BaseModel):
 class ManualRenameRequest(BaseModel):
     """Request model for manual rename endpoint."""
 
-    torrent_hash: str = Field(
-        ..., description="Torrent info hash to rename"
-    )
-    new_name: str = Field(
-        ..., description="New name to apply to the torrent"
-    )
+    torrent_hash: str = Field(..., description="Torrent info hash to rename")
+    new_name: str = Field(..., description="New name to apply to the torrent")
     mode: str = Field(
         default="torrent_and_folder",
         description="Rename mode: torrent_only, torrent_and_folder, torrent_folder_files, folder_only, files_only",
@@ -158,6 +151,6 @@ class ManualRenameResponse(BaseModel):
 
     status: str
     torrent_hash: str
-    new_name: Optional[str] = None
-    mode: Optional[str] = None
-    reason: Optional[str] = None
+    new_name: str | None = None
+    mode: str | None = None
+    reason: str | None = None

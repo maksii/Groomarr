@@ -1,9 +1,7 @@
 """Configuration management for Groomarr."""
 
 import logging
-import os
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import yaml
 from pydantic import Field
@@ -23,10 +21,14 @@ class Settings(BaseSettings):
     # API Server
     api_port: int = Field(default=8000)
     log_level: str = Field(default="INFO")
+    log_format: str = Field(default="text")  # "text" or "json"
 
     # Rename Mode
     # Options: torrent_only, torrent_and_folder, torrent_folder_files, folder_only, files_only
     rename_mode: str = Field(default="torrent_and_folder")
+
+    # Dry Run Mode - logs what would be renamed without making changes
+    dry_run: bool = Field(default=False)
 
     # Timing
     initial_delay: float = Field(default=2.0)
@@ -48,27 +50,27 @@ class RenameRules:
         # Config file state
         self.config_path: str = ""
         self.config_found: bool = False
-        self.config_error: Optional[str] = None
+        self.config_error: str | None = None
 
         # Trigger filters
-        self.indexers_include: List[str] = []
-        self.indexers_exclude: List[str] = []
-        self.qualities_include: List[str] = []
-        self.qualities_exclude: List[str] = []
-        self.customformats_require_any: List[str] = []
-        self.customformats_exclude: List[str] = []
-        self.min_customformat_score: Optional[int] = None
-        self.download_clients_include: List[str] = []
-        self.download_clients_exclude: List[str] = []
-        self.release_groups_include: List[str] = []
-        self.release_groups_exclude: List[str] = []
+        self.indexers_include: list[str] = []
+        self.indexers_exclude: list[str] = []
+        self.qualities_include: list[str] = []
+        self.qualities_exclude: list[str] = []
+        self.customformats_require_any: list[str] = []
+        self.customformats_exclude: list[str] = []
+        self.min_customformat_score: int | None = None
+        self.download_clients_include: list[str] = []
+        self.download_clients_exclude: list[str] = []
+        self.release_groups_include: list[str] = []
+        self.release_groups_exclude: list[str] = []
 
         # Rename rules
         self.prefix: str = ""
         self.suffix: str = ""
-        self.remove_patterns: List[str] = []
-        self.replace_patterns: Dict[str, str] = {}
-        self.skip_title_patterns: List[str] = []
+        self.remove_patterns: list[str] = []
+        self.replace_patterns: dict[str, str] = {}
+        self.skip_title_patterns: list[str] = []
 
     @classmethod
     def from_yaml(cls, file_path: str) -> "RenameRules":
@@ -84,7 +86,7 @@ class RenameRules:
         rules.config_found = True
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
 
             # Load trigger filters
@@ -138,7 +140,7 @@ class RenameRules:
             or self.skip_title_patterns
         )
 
-    def get_active_filters_summary(self) -> List[str]:
+    def get_active_filters_summary(self) -> list[str]:
         """Get list of active trigger filter names."""
         active = []
         if self.indexers_include:
@@ -165,7 +167,7 @@ class RenameRules:
             active.append(f"release_groups_exclude ({len(self.release_groups_exclude)})")
         return active
 
-    def get_active_rules_summary(self) -> List[str]:
+    def get_active_rules_summary(self) -> list[str]:
         """Get list of active rename rule names."""
         active = []
         if self.prefix:
@@ -194,10 +196,41 @@ def reload_rules():
 
 
 def setup_logging():
-    """Configure logging based on settings."""
+    """Configure logging based on settings.
+
+    Supports two formats:
+    - "text": Human-readable format (default)
+    - "json": JSON format for log aggregation systems
+    """
     log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+
+    if settings.log_format.lower() == "json":
+        # JSON logging for production/log aggregation
+        try:
+            from pythonjsonlogger import jsonlogger
+
+            handler = logging.StreamHandler()
+            formatter = jsonlogger.JsonFormatter(
+                "%(asctime)s %(levelname)s %(name)s %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%S",
+            )
+            handler.setFormatter(formatter)
+
+            root_logger = logging.getLogger()
+            root_logger.setLevel(log_level)
+            root_logger.addHandler(handler)
+        except ImportError:
+            # Fallback to text if python-json-logger not installed
+            logging.basicConfig(
+                level=log_level,
+                format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+            logging.warning("python-json-logger not installed, using text format")
+    else:
+        # Human-readable text format (default)
+        logging.basicConfig(
+            level=log_level,
+            format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )

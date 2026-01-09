@@ -11,10 +11,14 @@ services:
       # Optional - API Server
       - API_PORT=8000
       - LOG_LEVEL=INFO
+      # - LOG_FORMAT=json  # Use "json" for log aggregation systems
       
       # Optional - Rename Mode
       # Options: torrent_only, torrent_and_folder, torrent_folder_files, folder_only, files_only
       - RENAME_MODE=torrent_and_folder
+      
+      # Optional - Dry Run (test rules without making changes)
+      # - DRY_RUN=true
       
       # Optional - Timing (usually defaults are fine)
       - INITIAL_DELAY=2
