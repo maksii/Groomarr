@@ -285,3 +285,8 @@ def setup_logging():
         # Apply filter to all handlers
         for handler in logging.getLogger().handlers:
             handler.addFilter(health_filter)
+
+    # Apply filter to uvicorn.access logger specifically
+    # Uvicorn sets up its own handlers, so we need to filter at the logger level
+    uvicorn_access_logger = logging.getLogger("uvicorn.access")
+    uvicorn_access_logger.addFilter(health_filter)
