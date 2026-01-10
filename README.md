@@ -205,6 +205,7 @@ score_validation_policy: "block"  # or "warn"
 | `/webhook/radarr` | POST | Radarr webhook receiver |
 | `/webhook/sonarr` | POST | Sonarr webhook receiver |
 | `/rename/manual` | POST | Manually rename a torrent by hash |
+| `/rename/preview` | POST | Preview what a rename operation would do without making changes |
 | `/reload` | GET | Reload rename rules |
 | `/docs` | GET | Swagger API documentation |
 
@@ -227,12 +228,39 @@ curl -X POST http://localhost:8000/rename/manual \
 - `new_name` (required): New name to apply
 - `mode` (optional): Rename mode (default: `torrent_and_folder`)
 
+### Preview Rename Endpoint
+
+The `/rename/preview` endpoint shows exactly what would happen if you performed a rename operation without actually making any changes. This is useful for testing rename rules or verifying behavior before committing to a rename.
+
+```bash
+curl -X POST http://localhost:8000/rename/preview \
+  -H "Content-Type: application/json" \
+  -d '{
+    "torrent_hash": "AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+    "new_name": "Movie.2024.1080p.BluRay.x264-GROUP",
+    "mode": "torrent_folder_files"
+  }'
+```
+
+**Parameters:**
+- `torrent_hash` (required): The torrent info hash
+- `new_name` (required): New name to preview
+- `mode` (optional): Rename mode to preview (default: `torrent_and_folder`)
+
+**Response includes:**
+- Current state: torrent name, root folder, total files
+- Proposed changes: new torrent name, new folder name, list of file renames
+- Change indicators: which items will actually change
+- Warnings: any issues detected (e.g., conflicts, missing folders)
+
+This endpoint is read-only and never modifies your torrents, making it safe to use for testing and validation.
+
 ## Example docker-compose.yml
 
 ```yaml
 services:
   groomarr:
-    build: .
+    image: maksii/groomarr:latest
     container_name: groomarr
     environment:
       - QBITTORRENT_URL=http://qbittorrent:8080

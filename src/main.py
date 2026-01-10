@@ -1,5 +1,6 @@
 """FastAPI application for Groomarr webhook service."""
 
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -171,6 +172,43 @@ def _log_payload_diagnostics(source: str, payload: dict):
 
     if "downloadClientType" in payload:
         logger.debug(f"[{source}] Download client type: {payload['downloadClientType']}")
+
+
+def _log_full_payload(source: str, payload: dict):
+    """Log the complete payload structure for debugging purposes.
+
+    This is useful for discovering the structure of webhooks from new sources
+    like Prowlarr.
+
+    Args:
+        source: Source application (prowlarr)
+        payload: Raw JSON payload dictionary
+    """
+    logger.info(f"[{source}] ===== Received webhook payload =====")
+    logger.info(f"[{source}] Payload keys: {list(payload.keys())}")
+
+    # Log the entire payload as formatted JSON
+    try:
+        payload_json = json.dumps(payload, indent=2, ensure_ascii=False)
+        logger.info(f"[{source}] Full payload structure:\n{payload_json}")
+    except Exception as e:
+        logger.warning(f"[{source}] Failed to serialize payload as JSON: {e}")
+        logger.info(f"[{source}] Payload type: {type(payload)}, value: {payload}")
+
+    # Log specific fields if they exist (help identify structure)
+    if "eventType" in payload:
+        logger.info(f"[{source}] Event type: {payload['eventType']}")
+
+    if "indexerId" in payload:
+        logger.info(f"[{source}] Indexer ID: {payload['indexerId']}")
+
+    if "indexer" in payload:
+        logger.info(f"[{source}] Indexer: {payload['indexer']}")
+
+    if "release" in payload:
+        logger.info(f"[{source}] Release information present: {type(payload['release'])}")
+
+    logger.info(f"[{source}] ===== End of payload =====")
 
 
 def _log_config_state():
@@ -842,6 +880,38 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
     return WebhookResponse(
         status="queued",
         torrent_hash=download_id,
+    )
+
+
+@app.post("/webhook/prowlarr", response_model=WebhookResponse)
+async def prowlarr_webhook(request: Request):
+    """Handle Prowlarr webhook for testing and debugging.
+
+    This endpoint accepts any JSON payload from Prowlarr and logs the complete
+    structure for debugging purposes. Unlike Sonarr/Radarr endpoints, this does
+    not perform any renaming operations - it's purely for payload inspection.
+
+    Configure in Prowlarr: Settings -> Connect -> Webhook
+    - URL: http://groomarr:8000/webhook/prowlarr
+    - Events: Any events you want to test
+    """
+    # Parse raw JSON - accept any valid JSON payload
+    try:
+        raw_payload = await request.json()
+    except Exception as e:
+        logger.error(f"[prowlarr] Failed to parse JSON payload: {e}")
+        return WebhookResponse(status="error", reason="Invalid JSON payload")
+
+    # Log the complete payload structure for debugging
+    _log_full_payload("prowlarr", raw_payload)
+
+    # Extract event type if available
+    event_type = raw_payload.get("eventType", raw_payload.get("event", "unknown"))
+    logger.info(f"[prowlarr] Webhook received successfully (event type: {event_type})")
+
+    return WebhookResponse(
+        status="ok",
+        reason=f"Payload received and logged for debugging (event type: {event_type})",
     )
 
 
