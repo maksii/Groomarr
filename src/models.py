@@ -154,3 +154,53 @@ class ManualRenameResponse(BaseModel):
     new_name: str | None = None
     mode: str | None = None
     reason: str | None = None
+
+
+# =============================================================================
+# Preview Rename Models
+# =============================================================================
+
+
+class FileRenamePreview(BaseModel):
+    """Preview of a single file rename."""
+
+    old_path: str = Field(..., description="Current file path")
+    new_path: str = Field(..., description="New file path after rename")
+    will_change: bool = Field(..., description="Whether the path will actually change")
+
+
+class PreviewRenameResponse(BaseModel):
+    """Response model for rename preview endpoint."""
+
+    status: str = Field(..., description="Status: ok, error")
+    torrent_hash: str = Field(..., description="Torrent info hash")
+    mode: str = Field(..., description="Rename mode that would be used")
+    reason: str | None = Field(default=None, description="Error reason if status is error")
+
+    # Current state
+    current_torrent_name: str | None = Field(
+        default=None, description="Current torrent display name"
+    )
+    current_root_folder: str | None = Field(
+        default=None, description="Current root folder name (if exists)"
+    )
+
+    # Proposed changes
+    new_torrent_name: str | None = Field(
+        default=None, description="New torrent name (if renaming torrent)"
+    )
+    new_root_folder: str | None = Field(
+        default=None, description="New root folder name (if renaming folder)"
+    )
+    file_renames: list[FileRenamePreview] = Field(
+        default_factory=list, description="List of file renames (if renaming files)"
+    )
+
+    # Summary
+    torrent_will_change: bool = Field(default=False, description="Whether torrent name will change")
+    folder_will_change: bool = Field(default=False, description="Whether root folder will change")
+    files_will_change: int = Field(default=0, description="Number of files that will be renamed")
+    total_files: int = Field(default=0, description="Total number of files in torrent")
+    warnings: list[str] = Field(
+        default_factory=list, description="Any warnings about the rename operation"
+    )

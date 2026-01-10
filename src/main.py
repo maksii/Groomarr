@@ -10,14 +10,24 @@ from . import __version__
 from .arrapi import ArrClient
 from .config import reload_rules, rules, settings, setup_logging
 from .models import (
+    FileRenamePreview,
     ManualRenameRequest,
     ManualRenameResponse,
+    PreviewRenameResponse,
     RadarrWebhook,
     SonarrWebhook,
     WebhookResponse,
 )
 from .qbittorrent import QBitClient
-from .rename import RenameMode, apply_rename_rules, perform_rename, should_process
+from .rename import (
+    RenameConflictError,
+    RenameMode,
+    apply_rename_rules,
+    get_root_folder,
+    perform_rename,
+    should_process,
+    validate_rename_plan,
+)
 
 # Setup logging
 setup_logging()
@@ -479,6 +489,127 @@ async def manual_rename(request: ManualRenameRequest):
             mode=request.mode,
             reason="Rename operation failed",
         )
+
+
+@app.post("/rename/preview", response_model=PreviewRenameResponse)
+async def preview_rename(request: ManualRenameRequest):
+    """Preview a rename operation without making changes.
+
+    This endpoint shows exactly what would happen if you performed
+    a manual rename, including torrent name, folder, and file changes.
+
+    Args:
+        request: ManualRenameRequest with torrent_hash, new_name, and mode
+
+    Returns:
+        PreviewRenameResponse with all expected changes
+    """
+    hash_short = (
+        request.torrent_hash[:8] if len(request.torrent_hash) >= 8 else request.torrent_hash
+    )
+    logger.info(f"[preview] Received preview request for {hash_short}... mode={request.mode}")
+
+    # Validate rename mode
+    try:
+        mode = RenameMode(request.mode)
+    except ValueError:
+        valid_modes = [m.value for m in RenameMode]
+        return PreviewRenameResponse(
+            status="error",
+            torrent_hash=request.torrent_hash,
+            mode=request.mode,
+            reason=f"Invalid mode '{request.mode}'. Valid modes: {', '.join(valid_modes)}",
+        )
+
+    # Check if torrent exists
+    torrent = qbit_client.get_torrent_info(request.torrent_hash)
+    if not torrent:
+        logger.warning(f"[preview] Torrent {hash_short}... not found")
+        return PreviewRenameResponse(
+            status="error",
+            torrent_hash=request.torrent_hash,
+            mode=request.mode,
+            reason="Torrent not found",
+        )
+
+    current_name = torrent.get("name", "")
+    new_name = request.new_name
+
+    # Get files and root folder
+    files = qbit_client.get_files(request.torrent_hash)
+    root_folder = get_root_folder(files)
+
+    # Build response
+    response = PreviewRenameResponse(
+        status="ok",
+        torrent_hash=request.torrent_hash,
+        mode=request.mode,
+        current_torrent_name=current_name,
+        current_root_folder=root_folder,
+        total_files=len(files),
+    )
+
+    warnings: list[str] = []
+
+    # Check torrent rename
+    if mode in [
+        RenameMode.TORRENT_ONLY,
+        RenameMode.TORRENT_AND_FOLDER,
+        RenameMode.TORRENT_FOLDER_FILES,
+    ]:
+        response.new_torrent_name = new_name
+        response.torrent_will_change = current_name != new_name
+
+    # Check folder rename
+    if mode in [
+        RenameMode.TORRENT_AND_FOLDER,
+        RenameMode.TORRENT_FOLDER_FILES,
+        RenameMode.FOLDER_ONLY,
+    ]:
+        if root_folder:
+            response.new_root_folder = new_name
+            response.folder_will_change = root_folder != new_name
+        else:
+            warnings.append("No root folder to rename (single file or flat structure)")
+
+    # Check file renames
+    if mode in [RenameMode.TORRENT_FOLDER_FILES, RenameMode.FILES_ONLY]:
+        try:
+            rename_plan, plan_warnings = validate_rename_plan(files, new_name, root_folder)
+            warnings.extend(plan_warnings)
+
+            file_renames = []
+            files_changed = 0
+            for old_path, new_path in rename_plan:
+                will_change = old_path != new_path
+                if will_change:
+                    files_changed += 1
+                file_renames.append(
+                    FileRenamePreview(
+                        old_path=old_path,
+                        new_path=new_path,
+                        will_change=will_change,
+                    )
+                )
+
+            response.file_renames = file_renames
+            response.files_will_change = files_changed
+
+        except RenameConflictError as e:
+            response.status = "error"
+            response.reason = str(e)
+            logger.warning(f"[preview] Conflict detected for {hash_short}...: {e}")
+
+    response.warnings = warnings
+
+    logger.info(
+        f"[preview] Preview complete for {hash_short}...: "
+        f"torrent_change={response.torrent_will_change}, "
+        f"folder_change={response.folder_will_change}, "
+        f"files_change={response.files_will_change}/{response.total_files}"
+    )
+
+    return response
 
 
 @app.post("/webhook/radarr", response_model=WebhookResponse)

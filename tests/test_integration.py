@@ -450,6 +450,339 @@ class TestManualRenameEndpoint:
 
 
 # =============================================================================
+# Preview Rename Endpoint Tests
+# =============================================================================
+
+
+class TestPreviewRenameEndpoint:
+    """Test preview rename endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_preview_rename_success(self, async_client, mock_qbit_client):
+        """Preview rename should return expected changes."""
+        response = await async_client.post(
+            "/rename/preview",
+            json={
+                "torrent_hash": "AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+                "new_name": "New Torrent Name",
+                "mode": "torrent_and_folder",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["torrent_hash"] == "AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F"
+        assert data["mode"] == "torrent_and_folder"
+        assert data["current_torrent_name"] == "Original.Torrent.Name-Group"
+        assert data["current_root_folder"] == "Original.Torrent.Name-Group"
+        assert data["new_torrent_name"] == "New Torrent Name"
+        assert data["new_root_folder"] == "New Torrent Name"
+        assert data["torrent_will_change"] is True
+        assert data["folder_will_change"] is True
+        assert data["total_files"] == 3
+
+    @pytest.mark.asyncio
+    async def test_preview_rename_torrent_only_mode(self, async_client, mock_qbit_client):
+        """Preview with torrent_only mode should only show torrent change."""
+        response = await async_client.post(
+            "/rename/preview",
+            json={
+                "torrent_hash": "AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+                "new_name": "New Name",
+                "mode": "torrent_only",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["mode"] == "torrent_only"
+        assert data["new_torrent_name"] == "New Name"
+        assert data["torrent_will_change"] is True
+        # Folder and files should not be in scope
+        assert data["new_root_folder"] is None
+        assert data["folder_will_change"] is False
+        assert data["file_renames"] == []
+
+    @pytest.mark.asyncio
+    async def test_preview_rename_folder_only_mode(self, async_client, mock_qbit_client):
+        """Preview with folder_only mode should only show folder change."""
+        response = await async_client.post(
+            "/rename/preview",
+            json={
+                "torrent_hash": "AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+                "new_name": "New Folder Name",
+                "mode": "folder_only",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["mode"] == "folder_only"
+        assert data["new_torrent_name"] is None
+        assert data["torrent_will_change"] is False
+        assert data["new_root_folder"] == "New Folder Name"
+        assert data["folder_will_change"] is True
+        assert data["file_renames"] == []
+
+    @pytest.mark.asyncio
+    async def test_preview_rename_files_only_mode(self, async_client, mock_qbit_client):
+        """Preview with files_only mode should show file changes."""
+        response = await async_client.post(
+            "/rename/preview",
+            json={
+                "torrent_hash": "AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+                "new_name": "New File Name",
+                "mode": "files_only",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["mode"] == "files_only"
+        assert data["new_torrent_name"] is None
+        assert data["torrent_will_change"] is False
+        assert data["new_root_folder"] is None
+        assert data["folder_will_change"] is False
+        assert len(data["file_renames"]) == 3
+        assert data["files_will_change"] > 0
+
+    @pytest.mark.asyncio
+    async def test_preview_rename_torrent_folder_files_mode(self, async_client, mock_qbit_client):
+        """Preview with torrent_folder_files mode should show all changes."""
+        response = await async_client.post(
+            "/rename/preview",
+            json={
+                "torrent_hash": "AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+                "new_name": "Complete New Name",
+                "mode": "torrent_folder_files",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["mode"] == "torrent_folder_files"
+        assert data["new_torrent_name"] == "Complete New Name"
+        assert data["torrent_will_change"] is True
+        assert data["new_root_folder"] == "Complete New Name"
+        assert data["folder_will_change"] is True
+        assert len(data["file_renames"]) == 3
+        assert data["total_files"] == 3
+
+    @pytest.mark.asyncio
+    async def test_preview_rename_invalid_mode(self, async_client, mock_qbit_client):
+        """Preview with invalid mode should return error."""
+        response = await async_client.post(
+            "/rename/preview",
+            json={
+                "torrent_hash": "AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+                "new_name": "New Name",
+                "mode": "invalid_mode",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "error"
+        assert "Invalid mode" in data["reason"]
+        assert "torrent_only" in data["reason"]
+
+    @pytest.mark.asyncio
+    async def test_preview_rename_torrent_not_found(self, async_client, mock_qbit_client):
+        """Preview for non-existent torrent should return error."""
+        mock_qbit_client.get_torrent_info = MagicMock(return_value=None)
+
+        response = await async_client.post(
+            "/rename/preview",
+            json={
+                "torrent_hash": "NOTFOUND00000000000000000000000000000000",
+                "new_name": "New Name",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "error"
+        assert "not found" in data["reason"].lower()
+
+    @pytest.mark.asyncio
+    async def test_preview_rename_no_change_needed(self, async_client, mock_qbit_client):
+        """Preview should show no changes when name is the same."""
+        response = await async_client.post(
+            "/rename/preview",
+            json={
+                "torrent_hash": "AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+                "new_name": "Original.Torrent.Name-Group",  # Same as current
+                "mode": "torrent_and_folder",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["torrent_will_change"] is False
+        assert data["folder_will_change"] is False
+
+    @pytest.mark.asyncio
+    async def test_preview_rename_default_mode(self, async_client, mock_qbit_client):
+        """Preview without mode should use default (torrent_and_folder)."""
+        response = await async_client.post(
+            "/rename/preview",
+            json={
+                "torrent_hash": "AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
+                "new_name": "Default Mode Preview",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["mode"] == "torrent_and_folder"
+
+    @pytest.mark.asyncio
+    async def test_preview_rename_missing_required_fields(self, async_client):
+        """Preview without required fields should return 422."""
+        response = await async_client.post("/rename/preview", json={})
+        assert response.status_code == 422
+
+
+class TestPreviewRenameSingleFile:
+    """Test preview rename on single file torrents."""
+
+    @pytest.fixture
+    def single_file_app(self, mock_torrent, mock_single_file):
+        """Create FastAPI app with single file torrent mock."""
+        mock_client = MagicMock()
+        mock_client.wait_for_torrent = AsyncMock(return_value=mock_torrent)
+        mock_client.get_torrent_info = MagicMock(return_value=mock_torrent)
+        mock_client.get_files = MagicMock(return_value=mock_single_file)
+        mock_client.rename_torrent = MagicMock(return_value=True)
+        mock_client.rename_folder = MagicMock(return_value=True)
+        mock_client.rename_file = MagicMock(return_value=True)
+
+        with patch.dict(
+            os.environ,
+            {
+                "QBITTORRENT_URL": "http://mock:8080",
+                "QBITTORRENT_USERNAME": "test",
+                "QBITTORRENT_PASSWORD": "test",
+                "RULES_FILE": str(Path(__file__).parent / "fixtures" / "test_rules.yaml"),
+            },
+        ):
+            from importlib import reload
+
+            from src import config
+
+            reload(config)
+            from src import main
+
+            reload(main)
+
+            main.qbit_client = mock_client
+            yield main.app
+
+    @pytest.fixture
+    async def single_file_client(self, single_file_app):
+        """Create async client for single file tests."""
+        transport = ASGITransport(app=single_file_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client
+
+    @pytest.mark.asyncio
+    async def test_preview_single_file_no_folder(self, single_file_client):
+        """Preview single file torrent should show warning for no root folder."""
+        response = await single_file_client.post(
+            "/rename/preview",
+            json={
+                "torrent_hash": "SINGLEFILE000000000000000000000000000000",
+                "new_name": "Renamed Movie",
+                "mode": "torrent_and_folder",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["current_root_folder"] is None
+        assert data["folder_will_change"] is False
+        assert "No root folder" in data["warnings"][0]
+
+
+class TestPreviewRenameTVSeries:
+    """Test preview rename on TV series torrents."""
+
+    @pytest.fixture
+    def tv_series_app(self, mock_torrent, mock_tv_series_files):
+        """Create FastAPI app with TV series mock."""
+        mock_torrent.get = MagicMock(
+            side_effect=lambda k, d=None: {"name": "Series.S01.Complete"}.get(k, d)
+        )
+        mock_client = MagicMock()
+        mock_client.wait_for_torrent = AsyncMock(return_value=mock_torrent)
+        mock_client.get_torrent_info = MagicMock(return_value=mock_torrent)
+        mock_client.get_files = MagicMock(return_value=mock_tv_series_files)
+        mock_client.rename_torrent = MagicMock(return_value=True)
+        mock_client.rename_folder = MagicMock(return_value=True)
+        mock_client.rename_file = MagicMock(return_value=True)
+
+        with patch.dict(
+            os.environ,
+            {
+                "QBITTORRENT_URL": "http://mock:8080",
+                "QBITTORRENT_USERNAME": "test",
+                "QBITTORRENT_PASSWORD": "test",
+                "RULES_FILE": str(Path(__file__).parent / "fixtures" / "test_rules.yaml"),
+            },
+        ):
+            from importlib import reload
+
+            from src import config
+
+            reload(config)
+            from src import main
+
+            reload(main)
+
+            main.qbit_client = mock_client
+            yield main.app
+
+    @pytest.fixture
+    async def tv_series_client(self, tv_series_app):
+        """Create async client for TV series tests."""
+        transport = ASGITransport(app=tv_series_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client
+
+    @pytest.mark.asyncio
+    async def test_preview_tv_series_preserves_episodes(self, tv_series_client):
+        """Preview should show episode identifiers preserved in file names."""
+        response = await tv_series_client.post(
+            "/rename/preview",
+            json={
+                "torrent_hash": "TVSERIES00000000000000000000000000000000",
+                "new_name": "Series S01 1080p WEBDL",
+                "mode": "torrent_folder_files",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert len(data["file_renames"]) == 4
+
+        # Check that episode identifiers are preserved in new paths
+        new_paths = [f["new_path"] for f in data["file_renames"]]
+        assert any("S01E01" in path for path in new_paths)
+        assert any("S01E02" in path for path in new_paths)
+        assert any("S01E03" in path for path in new_paths)
+        assert any("S01E04" in path for path in new_paths)
+
+
+# =============================================================================
 # Background Task Tests
 # =============================================================================
 
