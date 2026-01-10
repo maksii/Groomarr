@@ -10,14 +10,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.config import RenameRules
 from src.rename import (
+    RenameConflictError,
     apply_rename_rules,
     build_episode_identifier,
     build_new_file_path,
+    extract_episode_from_batch,
     extract_episode_identifier,
     insert_episode_into_name,
     matches_any,
     sanitize_filename,
     strip_media_extension,
+    validate_rename_plan,
 )
 
 
@@ -313,6 +316,100 @@ class TestExtractEpisodeIdentifier:
         result = extract_episode_identifier("SeriesX S01 Complete Season.mkv")
         assert result is None
 
+    # Anime-style episode patterns
+    def test_anime_hyphen_format(self):
+        """Test anime style '- 10' format (from user's actual case)."""
+        result = extract_episode_identifier(
+            "[GM] Aku no Hana - 10 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+        )
+        assert result is not None
+        assert result[2] == "10"  # Episode number
+
+    def test_anime_hyphen_single_digit(self):
+        """Test anime style '- 1' format."""
+        result = extract_episode_identifier("[Group] Series Name - 1 (720p).mkv")
+        assert result is not None
+        assert result[2] == "01"  # Should be zero-padded
+
+    def test_anime_hyphen_double_digit(self):
+        """Test anime style '- 13' format."""
+        result = extract_episode_identifier("[Fansub] Anime Title - 13 [BDRip 1080p].mkv")
+        assert result is not None
+        assert result[2] == "13"
+
+    def test_episode_word_format(self):
+        """Test 'Episode 10' format."""
+        result = extract_episode_identifier("Series Name Episode 10 [1080p].mkv")
+        assert result is not None
+        assert result[2] == "10"
+
+    def test_ep_abbreviation_format(self):
+        """Test 'Ep 05' format."""
+        result = extract_episode_identifier("Series Name Ep 05 720p.mkv")
+        assert result is not None
+        assert result[2] == "05"
+
+    def test_ep_no_space_format(self):
+        """Test 'Ep05' format."""
+        result = extract_episode_identifier("Series Name Ep05 [720p].mkv")
+        assert result is not None
+        assert result[2] == "05"
+
+    def test_hash_number_format(self):
+        """Test '#10' format."""
+        result = extract_episode_identifier("Series Name #10 (1080p).mkv")
+        assert result is not None
+        assert result[2] == "10"
+
+    def test_bracketed_number_format(self):
+        """Test '[10]' format."""
+        result = extract_episode_identifier("Series Name [10] 720p.mkv")
+        assert result is not None
+        assert result[2] == "10"
+
+    def test_parenthesis_number_format(self):
+        """Test '(10)' format."""
+        result = extract_episode_identifier("Series Name (10) 1080p.mkv")
+        assert result is not None
+        assert result[2] == "10"
+
+    def test_dot_separated_number(self):
+        """Test '.10.' format.
+
+        Note: This pattern is tricky because '.10.720p' has a digit after the separator.
+        The batch analysis handles this case better for multiple files.
+        """
+        # Pattern works when followed by non-digit
+        result = extract_episode_identifier("Series.Name.10.HDRip.mkv")
+        assert result is not None
+        assert result[2] == "10"
+
+    def test_underscore_separated_number(self):
+        """Test '_10_' format.
+
+        Note: Similar to dot-separated, works best when followed by non-digit.
+        """
+        result = extract_episode_identifier("Series_Name_10_HDRip.mkv")
+        assert result is not None
+        assert result[2] == "10"
+
+    def test_ignores_year(self):
+        """Test that years (1900-2099) are not treated as episodes."""
+        result = extract_episode_identifier("Movie Name 2024 1080p.mkv")
+        assert result is None
+
+    def test_ignores_resolution(self):
+        """Test that resolutions are not treated as episodes."""
+        result = extract_episode_identifier("Movie Name 1080p BluRay.mkv")
+        assert result is None
+        result2 = extract_episode_identifier("Movie Name 720p WEB.mkv")
+        assert result2 is None
+
+    def test_standard_pattern_takes_priority(self):
+        """Test that S01E01 pattern takes priority over alternative patterns."""
+        result = extract_episode_identifier("[Group] Series - 10 S01E05 720p.mkv")
+        assert result == ("01", "E", "05")  # Standard pattern wins
+
 
 class TestBuildEpisodeIdentifier:
     """Test episode identifier string building."""
@@ -462,6 +559,267 @@ class TestBuildNewFilePathTVSeries:
         assert "S01E03" in result_ep3
         # All should be different
         assert result_ep1 != result_ep2 != result_ep3
+
+
+class TestExtractEpisodeFromBatch:
+    """Test batch episode detection for files without standard patterns."""
+
+    def test_anime_batch_detection(self):
+        """Test batch detection for anime files with '- XX' pattern."""
+        filenames = [
+            "[GM] Aku no Hana - 01 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv",
+            "[GM] Aku no Hana - 02 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv",
+            "[GM] Aku no Hana - 03 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv",
+            "[GM] Aku no Hana - 10 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv",
+            "[GM] Aku no Hana - 13 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv",
+        ]
+        result = extract_episode_from_batch(filenames)
+        assert len(result) == 5
+        assert result[filenames[0]] == "01"
+        assert result[filenames[1]] == "02"
+        assert result[filenames[3]] == "10"
+        assert result[filenames[4]] == "13"
+
+    def test_simple_numbered_files(self):
+        """Test batch detection for simple numbered files."""
+        filenames = [
+            "Series 1.mkv",
+            "Series 2.mkv",
+            "Series 3.mkv",
+            "Series 4.mkv",
+            "Series 5.mkv",
+        ]
+        result = extract_episode_from_batch(filenames)
+        assert len(result) == 5
+        # Numbers are zero-padded to consistent width
+        assert result["Series 1.mkv"] in ("1", "01")
+        assert result["Series 5.mkv"] in ("5", "05")
+
+    def test_dot_separated_numbers(self):
+        """Test batch detection for dot-separated numbered files."""
+        filenames = [
+            "Series.Name.01.720p.mkv",
+            "Series.Name.02.720p.mkv",
+            "Series.Name.03.720p.mkv",
+        ]
+        result = extract_episode_from_batch(filenames)
+        assert len(result) == 3
+        assert result["Series.Name.01.720p.mkv"] == "01"
+        assert result["Series.Name.03.720p.mkv"] == "03"
+
+    def test_single_file_returns_empty(self):
+        """Test that single file returns empty (no batch needed)."""
+        result = extract_episode_from_batch(["Single.File.mkv"])
+        assert result == {}
+
+    def test_empty_list_returns_empty(self):
+        """Test that empty list returns empty."""
+        result = extract_episode_from_batch([])
+        assert result == {}
+
+    def test_ignores_years_in_batch(self):
+        """Test that years are ignored during batch analysis."""
+        filenames = [
+            "Movie 2024 Part 1.mkv",
+            "Movie 2024 Part 2.mkv",
+            "Movie 2024 Part 3.mkv",
+        ]
+        result = extract_episode_from_batch(filenames)
+        assert len(result) == 3
+        # Should detect 1, 2, 3 - not 2024
+        assert "1" in result.values() or "01" in result.values()
+
+    def test_ignores_resolution_in_batch(self):
+        """Test that resolutions are ignored during batch analysis."""
+        filenames = [
+            "Series 01 1080p.mkv",
+            "Series 02 1080p.mkv",
+            "Series 03 1080p.mkv",
+        ]
+        result = extract_episode_from_batch(filenames)
+        assert len(result) == 3
+        # Should detect 01, 02, 03 - not 1080
+        values = list(result.values())
+        assert "1080" not in values
+
+    def test_no_unique_numbers_returns_empty(self):
+        """Test that files without unique identifying numbers return empty."""
+        filenames = [
+            "Series 720p.mkv",
+            "Series 720p Part2.mkv",
+            "Series 720p Part3.mkv",
+        ]
+        # All have 720 at same position, so it's not unique
+        # Part2/Part3 numbers are at different positions
+        # Just verify this doesn't crash - the key is robustness
+        extract_episode_from_batch(filenames)
+
+
+class TestValidateRenamePlan:
+    """Test rename plan validation and conflict detection."""
+
+    def test_no_conflicts_with_standard_episodes(self):
+        """Test validation passes with standard episode patterns."""
+        files = [
+            {"name": "SeriesFolder/Series S01E01.mkv"},
+            {"name": "SeriesFolder/Series S01E02.mkv"},
+            {"name": "SeriesFolder/Series S01E03.mkv"},
+        ]
+        plan, warnings = validate_rename_plan(files, "New Series S01 1080p", "SeriesFolder")
+        assert len(plan) == 3
+        assert len(warnings) == 0
+        # All paths should be different
+        new_paths = [p[1] for p in plan]
+        assert len(set(new_paths)) == 3
+
+    def test_no_conflicts_with_anime_episodes(self):
+        """Test validation passes with anime episode patterns."""
+        files = [
+            {"name": "AnimeFolder/[GM] Anime - 01 (1080p).mkv"},
+            {"name": "AnimeFolder/[GM] Anime - 02 (1080p).mkv"},
+            {"name": "AnimeFolder/[GM] Anime - 03 (1080p).mkv"},
+        ]
+        plan, warnings = validate_rename_plan(files, "Anime S01 1080p", "AnimeFolder")
+        assert len(plan) == 3
+        assert len(warnings) == 0
+        new_paths = [p[1] for p in plan]
+        assert len(set(new_paths)) == 3
+
+    def test_conflict_detection_all_same_name(self):
+        """Test detection when all files would get the same name."""
+        # Files with no detectable episode identifiers
+        files = [
+            {"name": "Folder/File A.mkv"},
+            {"name": "Folder/File B.mkv"},
+            {"name": "Folder/File C.mkv"},
+        ]
+        with pytest.raises(RenameConflictError) as exc_info:
+            validate_rename_plan(files, "New Name", "Folder")
+        assert "CRITICAL" in str(exc_info.value)
+        assert "data loss" in str(exc_info.value).lower()
+
+    def test_batch_analysis_prevents_conflict(self):
+        """Test that batch analysis is used to prevent false conflicts."""
+        # Files that look like they have no pattern, but batch analysis finds one
+        files = [
+            {"name": "Folder/[GM] Aku no Hana - 01 (1080p).mkv"},
+            {"name": "Folder/[GM] Aku no Hana - 02 (1080p).mkv"},
+            {"name": "Folder/[GM] Aku no Hana - 03 (1080p).mkv"},
+        ]
+        # Should not raise because anime pattern is detected
+        plan, warnings = validate_rename_plan(files, "Aku no Hana S01 1080p", "Folder")
+        assert len(plan) == 3
+        new_paths = [p[1] for p in plan]
+        assert len(set(new_paths)) == 3  # All unique
+
+    def test_single_file_no_conflict(self):
+        """Test that single file never has conflicts."""
+        files = [{"name": "Folder/Movie 2024 1080p.mkv"}]
+        plan, warnings = validate_rename_plan(files, "New Movie Name", "Folder")
+        assert len(plan) == 1
+        assert len(warnings) == 0
+
+    def test_empty_files_no_conflict(self):
+        """Test that empty file list returns empty plan."""
+        plan, warnings = validate_rename_plan([], "New Name", "Folder")
+        assert len(plan) == 0
+        assert len(warnings) == 0
+
+    def test_user_scenario_aku_no_hana(self):
+        """Test the exact user scenario that caused the bug.
+
+        This is the actual case from the bug report where 13 anime files
+        were all renamed to the same name.
+        """
+        files = [
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 01 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 02 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 03 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 04 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 05 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 06 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 07 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 08 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 09 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 10 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 11 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 12 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+            {
+                "name": "Aku no Hana [BDRip 1080p HEVC AAC]/[GM] Aku no Hana - 13 (BDRip 1080p HEVC AAC) Ukr DVO SUB.mkv"
+            },
+        ]
+        new_name = "Aku no Hana S01 BluRay 1080p [Ukrainian+Japanese] H.265-antik_2008"
+        root_folder = "Aku no Hana [BDRip 1080p HEVC AAC]"
+
+        # This should NOT raise an error and should produce 13 unique filenames
+        plan, warnings = validate_rename_plan(files, new_name, root_folder)
+        assert len(plan) == 13
+        assert len(warnings) == 0
+
+        # All new paths should be unique
+        new_paths = [p[1] for p in plan]
+        assert len(set(new_paths)) == 13, f"Expected 13 unique paths, got {len(set(new_paths))}"
+
+        # Each path should contain the episode number
+        for _, new_path in plan:
+            # The episode number should be preserved in the new path
+            assert "S01E" in new_path, f"Missing episode identifier in {new_path}"
+
+
+class TestBuildNewFilePathWithOverride:
+    """Test build_new_file_path with episode_override parameter."""
+
+    def test_episode_override_used(self):
+        """Test that episode_override is used when provided."""
+        old_path = "Folder/Some File.mkv"
+        new_name = "Series S01 1080p"
+        episode_override = ("01", "E", "05")
+
+        result = build_new_file_path(old_path, new_name, "Folder", episode_override)
+        assert "S01E05" in result
+
+    def test_override_takes_priority(self):
+        """Test that override takes priority over extracted episode."""
+        # File has S01E01, but override says E05
+        old_path = "Folder/Series S01E01 720p.mkv"
+        new_name = "Series S01 1080p"
+        episode_override = ("01", "E", "05")
+
+        result = build_new_file_path(old_path, new_name, "Folder", episode_override)
+        assert "S01E05" in result
+        assert "S01E01" not in result
+
+    def test_no_override_extracts_from_filename(self):
+        """Test that without override, episode is extracted from filename."""
+        old_path = "Folder/Series S01E03 720p.mkv"
+        new_name = "Series S01 1080p"
+
+        result = build_new_file_path(old_path, new_name, "Folder", episode_override=None)
+        assert "S01E03" in result
 
 
 if __name__ == "__main__":

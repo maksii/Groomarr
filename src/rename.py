@@ -232,11 +232,28 @@ EPISODE_PATTERN = re.compile(r"S(\d+)\s*(E(?:P)?)\s*(\d+)", re.IGNORECASE)
 # Pattern to match season-only identifier: S01, S02, etc.
 SEASON_ONLY_PATTERN = re.compile(r"S(\d+)(?!\s*E)", re.IGNORECASE)
 
+# Alternative episode patterns for anime and other formats
+# These patterns extract just the episode number (no season)
+ALTERNATIVE_EPISODE_PATTERNS = [
+    # Anime style: "- 10", " - 01 ", "- 13" (hyphen separated)
+    re.compile(r"[\s\-_]\-\s*(\d{1,4})(?:\s|\.|\)|$|\[)", re.IGNORECASE),
+    # Episode marker: "Episode 10", "Ep 05", "EP10"
+    re.compile(r"\b(?:Episode|Ep)[\.\s]*(\d{1,4})\b", re.IGNORECASE),
+    # Hash number: "#10", "# 05"
+    re.compile(r"#\s*(\d{1,4})\b"),
+    # Bracketed episode at end of name part: "SeriesName [10]" or "Name (10)"
+    re.compile(r"[\[\(](\d{1,4})[\]\)]"),
+    # Dot or underscore separated standalone number (not year, not resolution)
+    # Matches: ".10." or "_10_" but not ".1080." or ".2024."
+    re.compile(r"[._](\d{1,3})[._](?!\d)"),
+]
+
 
 def extract_episode_identifier(filename: str) -> tuple[str, str, str] | None:
     """Extract episode identifier from a filename.
 
     Matches patterns like: S01E01, S01 E01, S01EP01, s01e01, S01 EP01, etc.
+    Also handles anime patterns like: "- 10", "Episode 10", "#10"
 
     Args:
         filename: Original filename to extract from
@@ -244,14 +261,119 @@ def extract_episode_identifier(filename: str) -> tuple[str, str, str] | None:
     Returns:
         Tuple of (season_num, episode_marker, episode_num) if found, None otherwise
         Example: ("01", "E", "02") for S01E02 or S01 E02
+        For anime patterns without season: ("01", "E", "10") using season 01 as default
     """
+    # First try standard S01E01 pattern
     match = EPISODE_PATTERN.search(filename)
     if match:
         season_num = match.group(1)
         ep_marker = match.group(2).upper()  # Normalize to uppercase
         episode_num = match.group(3)
         return (season_num, ep_marker, episode_num)
+
+    # Try alternative patterns (anime, etc.) - these only have episode number
+    for pattern in ALTERNATIVE_EPISODE_PATTERNS:
+        match = pattern.search(filename)
+        if match:
+            episode_num = match.group(1)
+            # Skip if this looks like a year (1900-2099) or resolution (480, 720, 1080, etc.)
+            num_int = int(episode_num)
+            if 1900 <= num_int <= 2099:
+                continue  # Likely a year
+            if num_int in (480, 576, 720, 1080, 2160, 4320):
+                continue  # Likely a resolution
+            # Zero-pad to 2 digits for consistency
+            episode_num_padded = episode_num.zfill(2)
+            # Default to season 01 for anime-style patterns
+            return ("01", "E", episode_num_padded)
+
     return None
+
+
+def extract_episode_from_batch(filenames: list[str]) -> dict[str, str]:
+    """Analyze a batch of filenames to find unique episode identifiers.
+
+    When standard episode patterns fail, this function analyzes all filenames
+    together to find numbers that uniquely identify each file in sequence.
+
+    Args:
+        filenames: List of filenames (without path) to analyze
+
+    Returns:
+        Dict mapping filename to episode number (zero-padded), or empty if analysis fails
+    """
+    if len(filenames) <= 1:
+        return {}
+
+    # Extract all potential episode numbers from each filename
+    # Pattern to find standalone numbers (not years, not resolutions)
+    number_pattern = re.compile(r"(?<![0-9])(\d{1,4})(?![0-9])")
+
+    # Collect all numbers found in each filename with their positions
+    file_numbers: dict[str, list[tuple[int, int]]] = {}  # filename -> [(position, number), ...]
+
+    for fname in filenames:
+        # Remove extension for analysis
+        name_no_ext = fname.rsplit(".", 1)[0] if "." in fname else fname
+        numbers = []
+        for match in number_pattern.finditer(name_no_ext):
+            num = int(match.group(1))
+            # Skip years and resolutions
+            if 1900 <= num <= 2099:
+                continue
+            if num in (480, 576, 720, 1080, 2160, 4320):
+                continue
+            numbers.append((match.start(), num))
+        file_numbers[fname] = numbers
+
+    if not file_numbers:
+        return {}
+
+    # Find which number position has unique values that match the expected count
+    # Group numbers by their position index within each filename
+    max_positions = max(len(nums) for nums in file_numbers.values()) if file_numbers else 0
+
+    for pos_idx in range(max_positions):
+        # Get the number at this position from each file
+        pos_numbers: dict[str, int] = {}
+        for fname, nums in file_numbers.items():
+            if pos_idx < len(nums):
+                pos_numbers[fname] = nums[pos_idx][1]
+
+        # Check if we have a number from every file at this position
+        if len(pos_numbers) != len(filenames):
+            continue
+
+        # Check if all numbers are unique
+        unique_nums = set(pos_numbers.values())
+        if len(unique_nums) != len(filenames):
+            continue
+
+        # Check if numbers form a reasonable sequence (within expected range)
+        sorted_nums = sorted(unique_nums)
+        min_num, max_num = sorted_nums[0], sorted_nums[-1]
+
+        # Validate: should be a reasonable episode sequence
+        # - Not too spread out (max should be at most 3x the count)
+        # - Minimum should be reasonable (0-999 for episodes)
+        if max_num > len(filenames) * 3 or min_num > 999:
+            continue
+
+        # Found a valid episode identifier position!
+        # Determine padding width based on max number
+        pad_width = max(2, len(str(max_num)))
+
+        result = {}
+        for fname, num in pos_numbers.items():
+            result[fname] = str(num).zfill(pad_width)
+
+        logger.debug(
+            f"Batch analysis found episode numbers at position {pos_idx}: "
+            f"{sorted_nums[0]}-{sorted_nums[-1]} for {len(filenames)} files"
+        )
+        return result
+
+    return {}
 
 
 def build_episode_identifier(season: str, ep_marker: str, episode: str) -> str:
@@ -326,6 +448,135 @@ def insert_episode_into_name(new_name: str, episode_info: tuple[str, str, str]) 
 
 
 # =============================================================================
+# Safety Checks
+# =============================================================================
+
+
+class RenameConflictError(Exception):
+    """Raised when rename would result in file conflicts."""
+
+    pass
+
+
+def validate_rename_plan(
+    files: list[dict[str, Any]], new_name: str, root_folder: str | None
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Validate rename plan and detect potential conflicts.
+
+    Checks if renaming files would result in duplicate filenames,
+    which would cause data loss.
+
+    Args:
+        files: List of file info dicts from qBittorrent
+        new_name: New name to use for renaming
+        root_folder: Root folder if exists
+
+    Returns:
+        Tuple of (rename_plan, warnings) where:
+        - rename_plan: List of (old_path, new_path) tuples
+        - warnings: List of warning messages (empty if all OK)
+
+    Raises:
+        RenameConflictError: If all files would be renamed to the same name
+    """
+    if not files:
+        return [], []
+
+    warnings: list[str] = []
+    rename_plan: list[tuple[str, str]] = []
+
+    # Get all original filenames for batch analysis
+    original_filenames = []
+    for f in files:
+        path = f.get("name", "")
+        filename = path.rsplit("/", 1)[-1] if "/" in path else path
+        original_filenames.append(filename)
+
+    # First pass: try standard episode extraction
+    paths_with_episodes = []
+    paths_without_episodes = []
+
+    for f in files:
+        old_path = f.get("name", "")
+        filename = old_path.rsplit("/", 1)[-1] if "/" in old_path else old_path
+        episode_info = extract_episode_identifier(filename)
+        if episode_info:
+            paths_with_episodes.append((old_path, episode_info))
+        else:
+            paths_without_episodes.append(old_path)
+
+    # If most files don't have standard episode identifiers, try batch analysis
+    batch_episodes: dict[str, str] = {}
+    if len(paths_without_episodes) > 1 and len(paths_without_episodes) >= len(files) * 0.5:
+        # Get filenames without paths for batch analysis
+        filenames_for_batch = [
+            (p.rsplit("/", 1)[-1] if "/" in p else p) for p in paths_without_episodes
+        ]
+        batch_episodes = extract_episode_from_batch(filenames_for_batch)
+
+        if batch_episodes:
+            logger.info(
+                f"Using batch episode detection for {len(batch_episodes)} files "
+                f"without standard episode patterns"
+            )
+
+    # Build rename plan
+    new_paths: dict[str, list[str]] = {}  # new_path -> list of old_paths (for conflict detection)
+
+    for f in files:
+        old_path = f.get("name", "")
+        filename = old_path.rsplit("/", 1)[-1] if "/" in old_path else old_path
+
+        # Try to get episode info from various sources
+        episode_info = extract_episode_identifier(filename)
+
+        # If no standard episode, try batch analysis result
+        if not episode_info and filename in batch_episodes:
+            episode_num = batch_episodes[filename]
+            # Use default season 01 for batch-detected episodes
+            episode_info = ("01", "E", episode_num)
+            logger.debug(f"Batch detection: {filename} -> E{episode_num}")
+
+        # Build new path
+        new_path = build_new_file_path(
+            old_path, new_name, root_folder, episode_override=episode_info
+        )
+
+        rename_plan.append((old_path, new_path))
+
+        # Track for conflict detection
+        if new_path not in new_paths:
+            new_paths[new_path] = []
+        new_paths[new_path].append(old_path)
+
+    # Check for conflicts (multiple files -> same target)
+    conflicts = {k: v for k, v in new_paths.items() if len(v) > 1}
+
+    if conflicts:
+        conflict_count = sum(len(v) for v in conflicts.values())
+        unique_targets = len(conflicts)
+
+        # Critical: all files would get the same name = total data loss
+        if unique_targets == 1 and conflict_count == len(files):
+            conflict_target = list(conflicts.keys())[0]
+            raise RenameConflictError(
+                f"CRITICAL: All {len(files)} files would be renamed to the same name "
+                f"'{conflict_target}'. This would result in data loss. "
+                f"Episode identifiers could not be extracted from original filenames. "
+                f"Sample files: {[p.rsplit('/', 1)[-1] for p in list(conflicts.values())[0][:3]]}"
+            )
+
+        # Partial conflicts - some files would overwrite each other
+        for target, sources in conflicts.items():
+            warnings.append(
+                f"Conflict: {len(sources)} files would be renamed to '{target}': "
+                f"{[p.rsplit('/', 1)[-1] for p in sources[:3]]}"
+            )
+
+    return rename_plan, warnings
+
+
+# =============================================================================
 # Rename Operations
 # =============================================================================
 
@@ -356,7 +607,12 @@ def get_root_folder(files: list[dict[str, Any]]) -> str | None:
     return None
 
 
-def build_new_file_path(old_path: str, new_name: str, root_folder: str | None) -> str:
+def build_new_file_path(
+    old_path: str,
+    new_name: str,
+    root_folder: str | None,
+    episode_override: tuple[str, str, str] | None = None,
+) -> str:
     """Build new file path based on rename.
 
     For TV series files, preserves the episode identifier (S01E02, etc.)
@@ -366,6 +622,9 @@ def build_new_file_path(old_path: str, new_name: str, root_folder: str | None) -
         old_path: Original file path
         new_name: New name to use (typically from release title)
         root_folder: Root folder if exists
+        episode_override: Optional episode info tuple (season, marker, episode)
+                          to use instead of extracting from filename.
+                          Used for batch-detected episodes.
 
     Returns:
         New file path
@@ -378,8 +637,8 @@ def build_new_file_path(old_path: str, new_name: str, root_folder: str | None) -
     # Get the original filename without path
     original_filename = old_path.rsplit("/", 1)[-1] if "/" in old_path else old_path
 
-    # Extract episode identifier from original filename
-    episode_info = extract_episode_identifier(original_filename)
+    # Use override if provided, otherwise extract from original filename
+    episode_info = episode_override or extract_episode_identifier(original_filename)
 
     # Build the file's base name
     if episode_info:
@@ -413,6 +672,8 @@ async def perform_rename(
 ) -> bool:
     """Perform the actual rename operations based on mode.
 
+    Includes safety checks to prevent data loss from duplicate filenames.
+
     Args:
         qbit: qBittorrent client
         torrent_hash: Torrent info hash
@@ -441,6 +702,24 @@ async def perform_rename(
     files = qbit.get_files(torrent_hash)
     root_folder = get_root_folder(files)
 
+    # Validate file rename plan if we're renaming files
+    rename_plan: list[tuple[str, str]] = []
+    if mode in [RenameMode.TORRENT_FOLDER_FILES, RenameMode.FILES_ONLY]:
+        try:
+            rename_plan, warnings = validate_rename_plan(files, new_name, root_folder)
+
+            # Log warnings for partial conflicts
+            for warning in warnings:
+                logger.warning(f"Torrent {hash_short}...: {warning}")
+
+        except RenameConflictError as e:
+            logger.error(f"Torrent {hash_short}...: {e}")
+            logger.error(
+                f"Torrent {hash_short}...: Aborting rename to prevent data loss. "
+                f"Please check file naming patterns."
+            )
+            return False
+
     success = True
 
     # Rename torrent display name
@@ -464,11 +743,9 @@ async def perform_rename(
         elif not root_folder:
             logger.debug(f"Torrent {hash_short}... has no root folder to rename")
 
-    # Rename individual files
+    # Rename individual files using validated plan
     if mode in [RenameMode.TORRENT_FOLDER_FILES, RenameMode.FILES_ONLY]:
-        for file_info in files:
-            old_path = file_info.get("name", "")
-            new_path = build_new_file_path(old_path, new_name, root_folder)
+        for old_path, new_path in rename_plan:
             if old_path != new_path:
                 if not qbit.rename_file(torrent_hash, old_path, new_path):
                     success = False
