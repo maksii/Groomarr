@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI):
         url=settings.qbittorrent_url,
         username=settings.qbittorrent_username,
         password=settings.qbittorrent_password,
+        api_delay=settings.api_operation_delay_ms / 1000.0,  # Convert ms to seconds
     )
 
     # Initialize Sonarr client (if configured)
@@ -370,17 +371,23 @@ async def process_rename_task(
         return
 
     # Perform rename
-    success = await perform_rename(
+    result = await perform_rename(
         qbit=qbit_client,
         torrent_hash=torrent_hash,
         new_name=new_name,
         mode=mode,
     )
 
-    if success:
-        logger.info(f"[{source}] Successfully renamed '{media_title}' ({hash_short}...)")
+    if result.success:
+        if result.already_complete:
+            logger.info(f"[{source}] '{media_title}' ({hash_short}...) already renamed")
+        else:
+            logger.info(f"[{source}] Successfully renamed '{media_title}' ({hash_short}...)")
     else:
-        logger.error(f"[{source}] Failed to rename '{media_title}' ({hash_short}...)")
+        error_detail = ""
+        if result.verification_errors:
+            error_detail = f": {', '.join(result.verification_errors[:3])}"
+        logger.error(f"[{source}] Failed to rename '{media_title}' ({hash_short}...){error_detail}")
 
 
 # =============================================================================
@@ -465,29 +472,59 @@ async def manual_rename(request: ManualRenameRequest):
         )
 
     # Perform the rename
-    success = await perform_rename(
+    result = await perform_rename(
         qbit=qbit_client,
         torrent_hash=request.torrent_hash,
         new_name=request.new_name,
         mode=mode,
     )
 
-    if success:
-        logger.info(f"[manual] Successfully renamed {hash_short}... to '{request.new_name}'")
-        return ManualRenameResponse(
-            status="success",
-            torrent_hash=request.torrent_hash,
-            new_name=request.new_name,
-            mode=request.mode,
-        )
+    if result.success:
+        if result.already_complete:
+            logger.info(f"[manual] {hash_short}... already fully renamed to '{request.new_name}'")
+            return ManualRenameResponse(
+                status="success",
+                torrent_hash=request.torrent_hash,
+                new_name=request.new_name,
+                mode=request.mode,
+                reason="Already renamed, no changes needed",
+            )
+        else:
+            summary_parts = []
+            if result.torrent_renamed:
+                summary_parts.append("torrent")
+            if result.folder_renamed:
+                summary_parts.append("folder")
+            if result.files_renamed > 0:
+                summary_parts.append(f"{result.files_renamed} files")
+            if result.files_skipped > 0:
+                summary_parts.append(f"{result.files_skipped} already correct")
+
+            logger.info(f"[manual] Successfully renamed {hash_short}... to '{request.new_name}'")
+            return ManualRenameResponse(
+                status="success",
+                torrent_hash=request.torrent_hash,
+                new_name=request.new_name,
+                mode=request.mode,
+                reason=f"Renamed: {', '.join(summary_parts)}" if summary_parts else None,
+            )
     else:
-        logger.error(f"[manual] Failed to rename {hash_short}...")
+        error_msg = "Rename operation failed"
+        if result.verification_errors:
+            error_msg = f"Verification failed: {'; '.join(result.verification_errors[:3])}"
+        elif result.files_failed > 0:
+            error_msg = (
+                f"Partial failure: {result.files_renamed} files renamed, "
+                f"{result.files_failed} failed"
+            )
+
+        logger.error(f"[manual] Failed to rename {hash_short}...: {error_msg}")
         return ManualRenameResponse(
             status="error",
             torrent_hash=request.torrent_hash,
             new_name=request.new_name,
             mode=request.mode,
-            reason="Rename operation failed",
+            reason=error_msg,
         )
 
 

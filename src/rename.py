@@ -1,7 +1,9 @@
 """Rename logic with trigger filters and rule application."""
 
+import asyncio
 import logging
 import re
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -10,6 +12,25 @@ from .models import RadarrWebhook, SonarrWebhook
 from .qbittorrent import QBitClient
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RenameResult:
+    """Result of a rename operation with detailed status."""
+
+    success: bool
+    torrent_renamed: bool = False
+    folder_renamed: bool = False
+    files_renamed: int = 0
+    files_failed: int = 0
+    files_skipped: int = 0  # Already correct, no change needed
+    already_complete: bool = False  # True if nothing needed to be changed
+    verification_passed: bool = True
+    verification_errors: list[str] = field(default_factory=list)
+
+    @property
+    def total_files_processed(self) -> int:
+        return self.files_renamed + self.files_failed + self.files_skipped
 
 
 class RenameMode(str, Enum):
@@ -786,15 +807,110 @@ def build_new_file_path(
     return f"{file_base_name}{ext}"
 
 
+async def _verify_rename_state(
+    qbit: QBitClient,
+    torrent_hash: str,
+    expected_torrent_name: str | None,
+    expected_folder: str | None,
+    expected_files: dict[str, str] | None,
+    mode: RenameMode,
+    max_retries: int = 5,
+    retry_delay: float = 0.5,
+) -> tuple[bool, list[str]]:
+    """Verify the actual state matches expected after rename operations.
+
+    Uses retry logic because qBittorrent may take time to propagate changes.
+    Re-fetches data from qBit on each retry to get the latest state.
+
+    Args:
+        qbit: qBittorrent client
+        torrent_hash: Torrent info hash
+        expected_torrent_name: Expected torrent name (None to skip check)
+        expected_folder: Expected root folder name (None to skip check)
+        expected_files: Dict mapping expected new paths to original paths (None to skip)
+        mode: Rename mode
+        max_retries: Maximum number of verification attempts
+        retry_delay: Delay in seconds between retries
+
+    Returns:
+        Tuple of (all_passed, list of error messages)
+    """
+    hash_short = torrent_hash[:8]
+
+    for attempt in range(max_retries):
+        errors: list[str] = []
+
+        # Re-fetch current state from qBittorrent
+        torrent = qbit.get_torrent_info(torrent_hash)
+        if not torrent:
+            errors.append(f"Torrent {hash_short}... not found during verification")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+                continue
+            return False, errors
+
+        # Check torrent name
+        if expected_torrent_name is not None:
+            current_name = torrent.get("name", "")
+            if current_name != expected_torrent_name:
+                errors.append(
+                    f"Torrent name mismatch: expected '{expected_torrent_name}', "
+                    f"got '{current_name}'"
+                )
+
+        # Fetch files once for both file and folder checks
+        current_files = qbit.get_files(torrent_hash)
+        current_paths = {f.get("name", "") for f in current_files}
+
+        # Check files
+        if expected_files is not None:
+            for expected_path in expected_files:
+                if expected_path not in current_paths:
+                    errors.append(f"File not renamed: expected '{expected_path}'")
+
+        # Check folder (after folder rename, file paths change)
+        if expected_folder is not None and mode in [
+            RenameMode.TORRENT_AND_FOLDER,
+            RenameMode.TORRENT_FOLDER_FILES,
+            RenameMode.FOLDER_ONLY,
+        ]:
+            current_root = get_root_folder(current_files)
+            if current_root != expected_folder:
+                errors.append(
+                    f"Folder mismatch: expected '{expected_folder}', got '{current_root}'"
+                )
+
+        # If no errors, verification passed
+        if not errors:
+            if attempt > 0:
+                logger.debug(
+                    f"Torrent {hash_short}... verification passed after {attempt + 1} attempts"
+                )
+            return True, []
+
+        # If this isn't the last attempt, wait and retry
+        if attempt < max_retries - 1:
+            logger.debug(
+                f"Torrent {hash_short}... verification attempt {attempt + 1}/{max_retries} "
+                f"failed, retrying in {retry_delay}s: {errors}"
+            )
+            await asyncio.sleep(retry_delay)
+
+    # All retries exhausted, return final errors
+    return False, errors
+
+
 async def perform_rename(
     qbit: QBitClient,
     torrent_hash: str,
     new_name: str,
     mode: RenameMode,
-) -> bool:
+) -> RenameResult:
     """Perform the actual rename operations based on mode.
 
-    Includes safety checks to prevent data loss from duplicate filenames.
+    Includes safety checks to prevent data loss and verification after operations.
+    Supports partial renames - if some files are already renamed, only renames
+    the remaining ones.
 
     Args:
         qbit: qBittorrent client
@@ -803,49 +919,53 @@ async def perform_rename(
         mode: Rename mode
 
     Returns:
-        True if successful, False otherwise
+        RenameResult with detailed status of what was renamed
     """
     hash_short = torrent_hash[:8]
+    result = RenameResult(success=True)
 
     # Get current torrent info
     torrent = qbit.get_torrent_info(torrent_hash)
     if not torrent:
         logger.error(f"Torrent {hash_short}... not found for rename")
-        return False
+        return RenameResult(success=False, verification_errors=["Torrent not found"])
 
     current_name = torrent.get("name", "")
 
-    # Skip if already renamed
-    if current_name == new_name:
-        logger.info(f"Torrent {hash_short}... already has correct name, skipping")
-        return True
-
-    # Get files
+    # Get files and determine structure
     files = qbit.get_files(torrent_hash)
     root_folder = get_root_folder(files)
 
-    # Determine if we're renaming both files and folder
-    # If so, we need to rename files FIRST (keeping them in original folder),
-    # then rename the folder to avoid "file not found" errors
-    renaming_folder = (
+    # Determine what needs to be renamed based on mode
+    should_rename_torrent = mode in [
+        RenameMode.TORRENT_ONLY,
+        RenameMode.TORRENT_AND_FOLDER,
+        RenameMode.TORRENT_FOLDER_FILES,
+    ]
+    should_rename_folder = (
         mode
         in [
             RenameMode.TORRENT_AND_FOLDER,
             RenameMode.TORRENT_FOLDER_FILES,
             RenameMode.FOLDER_ONLY,
         ]
-        and root_folder
-        and root_folder != new_name
+        and root_folder is not None
     )
+    should_rename_files = mode in [RenameMode.TORRENT_FOLDER_FILES, RenameMode.FILES_ONLY]
 
-    renaming_files = mode in [RenameMode.TORRENT_FOLDER_FILES, RenameMode.FILES_ONLY]
+    # Check current state to determine what actually needs changing
+    torrent_needs_rename = should_rename_torrent and current_name != new_name
+    folder_needs_rename = should_rename_folder and root_folder != new_name
 
-    # Validate file rename plan if we're renaming files
+    # Build file rename plan if needed
     rename_plan: list[tuple[str, str]] = []
-    if renaming_files:
+    files_needing_rename: list[tuple[str, str]] = []
+
+    if should_rename_files:
         # When renaming both files and folder, keep files in original folder first
         # The folder rename will move them to the new location
-        preserve_folder = renaming_folder
+        preserve_folder = folder_needs_rename
+
         try:
             rename_plan, warnings = validate_rename_plan(
                 files, new_name, root_folder, preserve_folder=preserve_folder
@@ -855,46 +975,142 @@ async def perform_rename(
             for warning in warnings:
                 logger.warning(f"Torrent {hash_short}...: {warning}")
 
+            # Filter to only files that actually need renaming
+            # This supports partial renames - skip files already at target path
+            current_paths = {f.get("name", "") for f in files}
+            for old_path, new_path in rename_plan:
+                if old_path != new_path:
+                    # Check if file is at old path (needs rename) or already at new path
+                    if old_path in current_paths:
+                        files_needing_rename.append((old_path, new_path))
+                    elif new_path in current_paths:
+                        # File already at target path
+                        result.files_skipped += 1
+                        logger.debug(f"File already renamed: '{new_path}'")
+                    else:
+                        # Neither path found - could be an issue
+                        logger.warning(
+                            f"File state unclear for {hash_short}...: "
+                            f"neither '{old_path}' nor '{new_path}' found"
+                        )
+                else:
+                    result.files_skipped += 1
+
         except RenameConflictError as e:
             logger.error(f"Torrent {hash_short}...: {e}")
             logger.error(
                 f"Torrent {hash_short}...: Aborting rename to prevent data loss. "
                 f"Please check file naming patterns."
             )
-            return False
+            return RenameResult(success=False, verification_errors=[str(e)])
 
-    success = True
+    # Check if everything is already in the correct state
+    if not torrent_needs_rename and not folder_needs_rename and not files_needing_rename:
+        logger.info(f"Torrent {hash_short}... already fully renamed, nothing to do")
+        result.already_complete = True
+        return result
+
+    # Log what we're about to do
+    actions = []
+    if torrent_needs_rename:
+        actions.append("torrent")
+    if folder_needs_rename:
+        actions.append("folder")
+    if files_needing_rename:
+        actions.append(f"{len(files_needing_rename)} files")
+    logger.info(f"Torrent {hash_short}...: will rename {', '.join(actions)}")
 
     # Rename torrent display name first (this doesn't affect file paths)
-    if mode in [
-        RenameMode.TORRENT_ONLY,
-        RenameMode.TORRENT_AND_FOLDER,
-        RenameMode.TORRENT_FOLDER_FILES,
-    ]:
-        if not qbit.rename_torrent(torrent_hash, new_name):
-            success = False
+    if torrent_needs_rename:
+        if await qbit.rename_torrent(torrent_hash, new_name):
+            result.torrent_renamed = True
+        else:
+            result.success = False
 
     # Rename individual files BEFORE folder (to avoid path invalidation)
     # Files are renamed in-place within original folder, then folder is renamed
-    if renaming_files:
-        for old_path, new_path in rename_plan:
-            if old_path != new_path:
-                if not qbit.rename_file(torrent_hash, old_path, new_path):
-                    success = False
+    if files_needing_rename:
+        for old_path, new_path in files_needing_rename:
+            if await qbit.rename_file(torrent_hash, old_path, new_path):
+                result.files_renamed += 1
+            else:
+                result.files_failed += 1
+                result.success = False
 
     # Rename root folder AFTER files (folder rename updates all file paths)
-    if renaming_folder:
-        if not qbit.rename_folder(torrent_hash, root_folder, new_name):
-            success = False
-    elif (
-        mode
-        in [
-            RenameMode.TORRENT_AND_FOLDER,
-            RenameMode.TORRENT_FOLDER_FILES,
-            RenameMode.FOLDER_ONLY,
-        ]
-        and not root_folder
-    ):
+    if folder_needs_rename:
+        if await qbit.rename_folder(torrent_hash, root_folder, new_name):
+            result.folder_renamed = True
+            # Small delay to allow qBittorrent to update all file paths after folder rename
+            await asyncio.sleep(0.2)
+        else:
+            result.success = False
+    elif should_rename_folder and not root_folder:
         logger.debug(f"Torrent {hash_short}... has no root folder to rename")
 
-    return success
+    # Verification: check final state matches expected
+    # Build expected file paths after all operations
+    # Note: After folder rename, qBittorrent updates all file paths automatically
+    # So paths in rename_plan (which were built with preserve_folder=True) need adjustment
+    expected_files: dict[str, str] | None = None
+    if should_rename_files and rename_plan:
+        expected_files = {}
+        # Build expected paths based on rename plan and folder rename
+        for old_path, new_path in rename_plan:
+            if old_path != new_path:
+                # After folder rename, file paths will have new folder name
+                if folder_needs_rename and root_folder:
+                    # new_path was built with preserve_folder=True, so it has old folder name
+                    # We need to replace old folder with new folder in the path
+                    if new_path.startswith(root_folder + "/"):
+                        # Extract relative path after old folder, then prepend new folder
+                        relative_path = new_path[len(root_folder) + 1 :]
+                        expected_path = f"{new_name}/{relative_path}"
+                    else:
+                        # Path doesn't start with root folder - shouldn't happen but handle it
+                        expected_path = new_path
+                else:
+                    # No folder rename, paths should be as-is from rename plan
+                    expected_path = new_path
+                expected_files[expected_path] = old_path
+
+    # Determine expected folder after rename
+    expected_folder_name = new_name if folder_needs_rename else root_folder
+
+    # Run verification with retries (qBit may take time to propagate changes)
+    verification_passed, verification_errors = await _verify_rename_state(
+        qbit=qbit,
+        torrent_hash=torrent_hash,
+        expected_torrent_name=new_name if should_rename_torrent else None,
+        expected_folder=expected_folder_name if should_rename_folder else None,
+        expected_files=expected_files,
+        mode=mode,
+    )
+
+    result.verification_passed = verification_passed
+    result.verification_errors = verification_errors
+
+    if not verification_passed:
+        result.success = False
+        for error in verification_errors:
+            logger.error(f"Torrent {hash_short}... verification failed: {error}")
+
+    # Log summary
+    if result.success:
+        summary_parts = []
+        if result.torrent_renamed:
+            summary_parts.append("torrent")
+        if result.folder_renamed:
+            summary_parts.append("folder")
+        if result.files_renamed > 0:
+            summary_parts.append(f"{result.files_renamed} files")
+        if summary_parts:
+            logger.info(f"Torrent {hash_short}...: renamed {', '.join(summary_parts)}")
+    else:
+        logger.error(
+            f"Torrent {hash_short}...: rename partially failed - "
+            f"files: {result.files_renamed} ok, {result.files_failed} failed, "
+            f"{result.files_skipped} skipped"
+        )
+
+    return result

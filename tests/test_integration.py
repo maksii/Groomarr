@@ -84,14 +84,53 @@ def mock_tv_series_files():
 
 @pytest.fixture
 def mock_qbit_client(mock_torrent, mock_torrent_files):
-    """Create a fully mocked QBitClient."""
+    """Create a fully mocked QBitClient.
+
+    The mock supports verification by updating internal state after renames.
+    """
     mock_client = MagicMock()
     mock_client.wait_for_torrent = AsyncMock(return_value=mock_torrent)
-    mock_client.get_torrent_info = MagicMock(return_value=mock_torrent)
-    mock_client.get_files = MagicMock(return_value=mock_torrent_files)
-    mock_client.rename_torrent = MagicMock(return_value=True)
-    mock_client.rename_folder = MagicMock(return_value=True)
-    mock_client.rename_file = MagicMock(return_value=True)
+
+    # Track current state for verification
+    current_torrent_name = {"name": "Original.Torrent.Name-Group"}
+    current_files = list(mock_torrent_files)  # Copy
+
+    def get_torrent_info(torrent_hash):
+        torrent = MagicMock()
+        torrent.name = current_torrent_name["name"]
+        torrent.state = "downloading"
+        torrent.get = MagicMock(
+            side_effect=lambda k, d=None: {"name": current_torrent_name["name"]}.get(k, d)
+        )
+        return torrent
+
+    def rename_torrent(torrent_hash, new_name):
+        current_torrent_name["name"] = new_name
+        return True
+
+    def get_files(torrent_hash):
+        return current_files
+
+    def rename_file(torrent_hash, old_path, new_path):
+        # Update internal state to reflect renamed file
+        for i, f in enumerate(current_files):
+            if f.get("name") == old_path:
+                current_files[i] = {"name": new_path}
+                return True
+        return True  # Still return True even if not found (for verification tests)
+
+    def rename_folder(torrent_hash, old_path, new_path):
+        # Update all file paths to reflect folder rename
+        for i, f in enumerate(current_files):
+            if f.get("name", "").startswith(old_path + "/"):
+                current_files[i] = {"name": new_path + f["name"][len(old_path) :]}
+        return True
+
+    mock_client.get_torrent_info = MagicMock(side_effect=get_torrent_info)
+    mock_client.get_files = MagicMock(side_effect=get_files)
+    mock_client.rename_torrent = AsyncMock(side_effect=rename_torrent)
+    mock_client.rename_folder = AsyncMock(side_effect=rename_folder)
+    mock_client.rename_file = AsyncMock(side_effect=rename_file)
     return mock_client
 
 
@@ -395,7 +434,7 @@ class TestManualRenameEndpoint:
     async def test_manual_rename_operation_failed(self, async_client, mock_qbit_client):
         """Manual rename should handle rename failure gracefully."""
         # Make rename operations fail
-        mock_qbit_client.rename_torrent = MagicMock(return_value=False)
+        mock_qbit_client.rename_torrent = AsyncMock(return_value=False)
 
         response = await async_client.post(
             "/rename/manual",
@@ -660,9 +699,9 @@ class TestPreviewRenameSingleFile:
         mock_client.wait_for_torrent = AsyncMock(return_value=mock_torrent)
         mock_client.get_torrent_info = MagicMock(return_value=mock_torrent)
         mock_client.get_files = MagicMock(return_value=mock_single_file)
-        mock_client.rename_torrent = MagicMock(return_value=True)
-        mock_client.rename_folder = MagicMock(return_value=True)
-        mock_client.rename_file = MagicMock(return_value=True)
+        mock_client.rename_torrent = AsyncMock(return_value=True)
+        mock_client.rename_folder = AsyncMock(return_value=True)
+        mock_client.rename_file = AsyncMock(return_value=True)
 
         with patch.dict(
             os.environ,
@@ -725,9 +764,9 @@ class TestPreviewRenameTVSeries:
         mock_client.wait_for_torrent = AsyncMock(return_value=mock_torrent)
         mock_client.get_torrent_info = MagicMock(return_value=mock_torrent)
         mock_client.get_files = MagicMock(return_value=mock_tv_series_files)
-        mock_client.rename_torrent = MagicMock(return_value=True)
-        mock_client.rename_folder = MagicMock(return_value=True)
-        mock_client.rename_file = MagicMock(return_value=True)
+        mock_client.rename_torrent = AsyncMock(return_value=True)
+        mock_client.rename_folder = AsyncMock(return_value=True)
+        mock_client.rename_file = AsyncMock(return_value=True)
 
         with patch.dict(
             os.environ,
@@ -852,7 +891,8 @@ class TestPerformRename:
             mode=RenameMode.TORRENT_ONLY,
         )
 
-        assert result is True
+        assert result.success is True
+        assert result.torrent_renamed is True
         mock_qbit_client.rename_torrent.assert_called_once()
         mock_qbit_client.rename_folder.assert_not_called()
 
@@ -868,7 +908,9 @@ class TestPerformRename:
             mode=RenameMode.TORRENT_AND_FOLDER,
         )
 
-        assert result is True
+        assert result.success is True
+        assert result.torrent_renamed is True
+        assert result.folder_renamed is True
         mock_qbit_client.rename_torrent.assert_called_once()
         mock_qbit_client.rename_folder.assert_called_once()
 
@@ -884,7 +926,9 @@ class TestPerformRename:
             mode=RenameMode.TORRENT_FOLDER_FILES,
         )
 
-        assert result is True
+        assert result.success is True
+        assert result.torrent_renamed is True
+        assert result.folder_renamed is True
         mock_qbit_client.rename_torrent.assert_called_once()
         mock_qbit_client.rename_folder.assert_called_once()
         # Files should be renamed too
@@ -896,7 +940,7 @@ class TestPerformRename:
         from src.rename import RenameMode, perform_rename
 
         # Make rename fail
-        mock_qbit_client.rename_torrent = MagicMock(return_value=False)
+        mock_qbit_client.rename_torrent = AsyncMock(return_value=False)
 
         result = await perform_rename(
             qbit=mock_qbit_client,
@@ -905,7 +949,7 @@ class TestPerformRename:
             mode=RenameMode.TORRENT_ONLY,
         )
 
-        assert result is False
+        assert result.success is False
 
     @pytest.mark.asyncio
     async def test_torrent_not_found_returns_false(self, mock_qbit_client):
@@ -921,7 +965,7 @@ class TestPerformRename:
             mode=RenameMode.TORRENT_ONLY,
         )
 
-        assert result is False
+        assert result.success is False
 
     @pytest.mark.asyncio
     async def test_rename_folder_only_mode(self, mock_qbit_client):
@@ -935,7 +979,9 @@ class TestPerformRename:
             mode=RenameMode.FOLDER_ONLY,
         )
 
-        assert result is True
+        assert result.success is True
+        assert result.folder_renamed is True
+        assert result.torrent_renamed is False
         mock_qbit_client.rename_torrent.assert_not_called()
         mock_qbit_client.rename_folder.assert_called_once()
         mock_qbit_client.rename_file.assert_not_called()
@@ -952,7 +998,10 @@ class TestPerformRename:
             mode=RenameMode.FILES_ONLY,
         )
 
-        assert result is True
+        assert result.success is True
+        assert result.files_renamed > 0
+        assert result.torrent_renamed is False
+        assert result.folder_renamed is False
         mock_qbit_client.rename_torrent.assert_not_called()
         mock_qbit_client.rename_folder.assert_not_called()
         # Files should be renamed
@@ -972,11 +1021,39 @@ class TestSingleFileTorrentRename:
         """Create a mock QBitClient with single file torrent."""
         mock_client = MagicMock()
         mock_client.wait_for_torrent = AsyncMock(return_value=mock_torrent)
-        mock_client.get_torrent_info = MagicMock(return_value=mock_torrent)
-        mock_client.get_files = MagicMock(return_value=mock_single_file)
-        mock_client.rename_torrent = MagicMock(return_value=True)
-        mock_client.rename_folder = MagicMock(return_value=True)
-        mock_client.rename_file = MagicMock(return_value=True)
+
+        # Track current state for verification
+        current_torrent_name = {"name": "Original.Torrent.Name-Group"}
+        current_files = list(mock_single_file)
+
+        def get_torrent_info(torrent_hash):
+            torrent = MagicMock()
+            torrent.name = current_torrent_name["name"]
+            torrent.state = "downloading"
+            torrent.get = MagicMock(
+                side_effect=lambda k, d=None: {"name": current_torrent_name["name"]}.get(k, d)
+            )
+            return torrent
+
+        def rename_torrent(torrent_hash, new_name):
+            current_torrent_name["name"] = new_name
+            return True
+
+        def get_files(torrent_hash):
+            return current_files
+
+        def rename_file(torrent_hash, old_path, new_path):
+            for i, f in enumerate(current_files):
+                if f.get("name") == old_path:
+                    current_files[i] = {"name": new_path}
+                    return True
+            return True
+
+        mock_client.get_torrent_info = MagicMock(side_effect=get_torrent_info)
+        mock_client.get_files = MagicMock(side_effect=get_files)
+        mock_client.rename_torrent = AsyncMock(side_effect=rename_torrent)
+        mock_client.rename_folder = AsyncMock(return_value=True)
+        mock_client.rename_file = AsyncMock(side_effect=rename_file)
         return mock_client
 
     @pytest.mark.asyncio
@@ -991,7 +1068,8 @@ class TestSingleFileTorrentRename:
             mode=RenameMode.TORRENT_ONLY,
         )
 
-        assert result is True
+        assert result.success is True
+        assert result.torrent_renamed is True
         single_file_qbit_client.rename_torrent.assert_called_once()
         single_file_qbit_client.rename_folder.assert_not_called()
         single_file_qbit_client.rename_file.assert_not_called()
@@ -1008,7 +1086,8 @@ class TestSingleFileTorrentRename:
             mode=RenameMode.TORRENT_AND_FOLDER,
         )
 
-        assert result is True
+        assert result.success is True
+        assert result.torrent_renamed is True
         single_file_qbit_client.rename_torrent.assert_called_once()
         # No root folder in single file torrent, so rename_folder should not be called
         single_file_qbit_client.rename_folder.assert_not_called()
@@ -1025,7 +1104,8 @@ class TestSingleFileTorrentRename:
             mode=RenameMode.TORRENT_FOLDER_FILES,
         )
 
-        assert result is True
+        assert result.success is True
+        assert result.torrent_renamed is True
         single_file_qbit_client.rename_torrent.assert_called_once()
         # No root folder, so rename_folder should not be called
         single_file_qbit_client.rename_folder.assert_not_called()
@@ -1044,7 +1124,9 @@ class TestSingleFileTorrentRename:
             mode=RenameMode.FOLDER_ONLY,
         )
 
-        assert result is True
+        # Single file has no folder, so already_complete should be True
+        assert result.success is True
+        assert result.already_complete is True
         single_file_qbit_client.rename_torrent.assert_not_called()
         single_file_qbit_client.rename_folder.assert_not_called()
         single_file_qbit_client.rename_file.assert_not_called()
@@ -1061,7 +1143,8 @@ class TestSingleFileTorrentRename:
             mode=RenameMode.FILES_ONLY,
         )
 
-        assert result is True
+        assert result.success is True
+        assert result.files_renamed == 1
         single_file_qbit_client.rename_torrent.assert_not_called()
         single_file_qbit_client.rename_folder.assert_not_called()
         single_file_qbit_client.rename_file.assert_called_once()
@@ -1075,8 +1158,55 @@ class TestSingleFileTorrentRename:
 class TestMultiFileTorrentRename:
     """Test rename operations on multi-file torrents with all modes."""
 
+    @pytest.fixture
+    def fresh_multi_file_mock(self, mock_torrent_files):
+        """Create a fresh mock QBitClient for each test case."""
+
+        def create_mock():
+            mock_client = MagicMock()
+            current_torrent_name = {"name": "Original.Torrent.Name-Group"}
+            current_files = [dict(f) for f in mock_torrent_files]
+
+            def get_torrent_info(torrent_hash):
+                torrent = MagicMock()
+                torrent.name = current_torrent_name["name"]
+                torrent.state = "downloading"
+                torrent.get = MagicMock(
+                    side_effect=lambda k, d=None: {"name": current_torrent_name["name"]}.get(k, d)
+                )
+                return torrent
+
+            def rename_torrent(torrent_hash, new_name):
+                current_torrent_name["name"] = new_name
+                return True
+
+            def get_files(torrent_hash):
+                return current_files
+
+            def rename_file(torrent_hash, old_path, new_path):
+                for i, f in enumerate(current_files):
+                    if f.get("name") == old_path:
+                        current_files[i] = {"name": new_path}
+                        return True
+                return True
+
+            def rename_folder(torrent_hash, old_path, new_path):
+                for i, f in enumerate(current_files):
+                    if f.get("name", "").startswith(old_path + "/"):
+                        current_files[i] = {"name": new_path + f["name"][len(old_path) :]}
+                return True
+
+            mock_client.get_torrent_info = MagicMock(side_effect=get_torrent_info)
+            mock_client.get_files = MagicMock(side_effect=get_files)
+            mock_client.rename_torrent = AsyncMock(side_effect=rename_torrent)
+            mock_client.rename_folder = AsyncMock(side_effect=rename_folder)
+            mock_client.rename_file = AsyncMock(side_effect=rename_file)
+            return mock_client
+
+        return create_mock
+
     @pytest.mark.asyncio
-    async def test_multi_file_all_modes_call_correct_methods(self, mock_qbit_client):
+    async def test_multi_file_all_modes_call_correct_methods(self, fresh_multi_file_mock):
         """Test all rename modes call the correct qBit methods for multi-file torrents."""
         from src.rename import RenameMode, perform_rename
 
@@ -1114,44 +1244,40 @@ class TestMultiFileTorrentRename:
         ]
 
         for case in test_cases:
-            # Reset mocks
-            mock_qbit_client.rename_torrent.reset_mock()
-            mock_qbit_client.rename_folder.reset_mock()
-            mock_qbit_client.rename_file.reset_mock()
+            # Create a fresh mock for each mode to avoid state contamination
+            mock_client = fresh_multi_file_mock()
 
             result = await perform_rename(
-                qbit=mock_qbit_client,
+                qbit=mock_client,
                 torrent_hash="MULTIFILE0000000000000000000000000000000",
                 new_name="New Multi File Name",
                 mode=case["mode"],
             )
 
-            assert result is True, f"Failed for mode: {case['mode']}"
+            assert result.success is True, f"Failed for mode: {case['mode']}"
 
             if case["expect_torrent"]:
-                assert mock_qbit_client.rename_torrent.called, (
+                assert mock_client.rename_torrent.called, (
                     f"Expected rename_torrent for {case['mode']}"
                 )
             else:
-                assert not mock_qbit_client.rename_torrent.called, (
+                assert not mock_client.rename_torrent.called, (
                     f"Unexpected rename_torrent for {case['mode']}"
                 )
 
             if case["expect_folder"]:
-                assert mock_qbit_client.rename_folder.called, (
+                assert mock_client.rename_folder.called, (
                     f"Expected rename_folder for {case['mode']}"
                 )
             else:
-                assert not mock_qbit_client.rename_folder.called, (
+                assert not mock_client.rename_folder.called, (
                     f"Unexpected rename_folder for {case['mode']}"
                 )
 
             if case["expect_files"]:
-                assert mock_qbit_client.rename_file.called, (
-                    f"Expected rename_file for {case['mode']}"
-                )
+                assert mock_client.rename_file.called, f"Expected rename_file for {case['mode']}"
             else:
-                assert not mock_qbit_client.rename_file.called, (
+                assert not mock_client.rename_file.called, (
                     f"Unexpected rename_file for {case['mode']}"
                 )
 
@@ -1168,16 +1294,46 @@ class TestTVSeriesRename:
     def tv_series_qbit_client(self, mock_torrent, mock_tv_series_files):
         """Create a mock QBitClient with TV series files."""
         mock_client = MagicMock()
-        # Update torrent name for TV series
-        mock_torrent.get = MagicMock(
-            side_effect=lambda k, d=None: {"name": "Series.S01.Complete"}.get(k, d)
-        )
+
+        # Track current state for verification
+        current_torrent_name = {"name": "Series.S01.Complete"}
+        current_files = list(mock_tv_series_files)
+
+        def get_torrent_info(torrent_hash):
+            torrent = MagicMock()
+            torrent.name = current_torrent_name["name"]
+            torrent.state = "downloading"
+            torrent.get = MagicMock(
+                side_effect=lambda k, d=None: {"name": current_torrent_name["name"]}.get(k, d)
+            )
+            return torrent
+
+        def rename_torrent(torrent_hash, new_name):
+            current_torrent_name["name"] = new_name
+            return True
+
+        def get_files(torrent_hash):
+            return current_files
+
+        def rename_file(torrent_hash, old_path, new_path):
+            for i, f in enumerate(current_files):
+                if f.get("name") == old_path:
+                    current_files[i] = {"name": new_path}
+                    return True
+            return True
+
+        def rename_folder(torrent_hash, old_path, new_path):
+            for i, f in enumerate(current_files):
+                if f.get("name", "").startswith(old_path + "/"):
+                    current_files[i] = {"name": new_path + f["name"][len(old_path) :]}
+            return True
+
         mock_client.wait_for_torrent = AsyncMock(return_value=mock_torrent)
-        mock_client.get_torrent_info = MagicMock(return_value=mock_torrent)
-        mock_client.get_files = MagicMock(return_value=mock_tv_series_files)
-        mock_client.rename_torrent = MagicMock(return_value=True)
-        mock_client.rename_folder = MagicMock(return_value=True)
-        mock_client.rename_file = MagicMock(return_value=True)
+        mock_client.get_torrent_info = MagicMock(side_effect=get_torrent_info)
+        mock_client.get_files = MagicMock(side_effect=get_files)
+        mock_client.rename_torrent = AsyncMock(side_effect=rename_torrent)
+        mock_client.rename_folder = AsyncMock(side_effect=rename_folder)
+        mock_client.rename_file = AsyncMock(side_effect=rename_file)
         return mock_client
 
     @pytest.mark.asyncio
@@ -1192,7 +1348,7 @@ class TestTVSeriesRename:
             mode=RenameMode.TORRENT_FOLDER_FILES,
         )
 
-        assert result is True
+        assert result.success is True
 
         # Check that rename_file was called for each episode
         assert tv_series_qbit_client.rename_file.call_count == 4
@@ -1219,7 +1375,8 @@ class TestTVSeriesRename:
             mode=RenameMode.TORRENT_ONLY,
         )
 
-        assert result is True
+        assert result.success is True
+        assert result.torrent_renamed is True
         tv_series_qbit_client.rename_torrent.assert_called_once()
         tv_series_qbit_client.rename_file.assert_not_called()
 
@@ -1235,7 +1392,8 @@ class TestTVSeriesRename:
             mode=RenameMode.FILES_ONLY,
         )
 
-        assert result is True
+        assert result.success is True
+        assert result.files_renamed == 4
         tv_series_qbit_client.rename_torrent.assert_not_called()
         tv_series_qbit_client.rename_folder.assert_not_called()
         # All 4 episode files should be renamed

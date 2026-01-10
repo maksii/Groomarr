@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from qbittorrentapi import Client
@@ -9,15 +10,30 @@ from qbittorrentapi.exceptions import APIConnectionError, LoginFailed
 
 logger = logging.getLogger(__name__)
 
+# Default delay between API operations in seconds
+DEFAULT_API_DELAY = 0.1  # 100ms
+
 
 class QBitClient:
     """Wrapper for qBittorrent API client with retry logic."""
 
-    def __init__(self, url: str, username: str, password: str):
+    def __init__(
+        self, url: str, username: str, password: str, api_delay: float = DEFAULT_API_DELAY
+    ):
+        """Initialize qBittorrent client.
+
+        Args:
+            url: qBittorrent Web UI URL
+            username: qBittorrent username
+            password: qBittorrent password
+            api_delay: Delay between API operations in seconds (default 0.1s/100ms)
+        """
         self.url = url
         self.username = username
         self.password = password
+        self.api_delay = api_delay
         self._client: Client | None = None
+        self._last_operation_time: float = 0
 
     def _get_client(self) -> Client:
         """Get or create qBittorrent client with lazy connection."""
@@ -54,6 +70,22 @@ class QBitClient:
             return True
         except Exception:
             return False
+
+    async def _apply_rate_limit(self) -> None:
+        """Apply rate limiting between API operations.
+
+        Ensures minimum delay between consecutive API calls to prevent
+        silent failures when qBittorrent can't keep up with rapid requests.
+
+        Uses asyncio.sleep() to avoid blocking the event loop.
+        """
+        if self.api_delay <= 0:
+            return
+
+        elapsed = time.time() - self._last_operation_time
+        if elapsed < self.api_delay:
+            await asyncio.sleep(self.api_delay - elapsed)
+        self._last_operation_time = time.time()
 
     async def wait_for_torrent(
         self,
@@ -148,7 +180,7 @@ class QBitClient:
             logger.error(f"Error getting torrent files: {e}")
             return []
 
-    def rename_torrent(self, torrent_hash: str, new_name: str) -> bool:
+    async def rename_torrent(self, torrent_hash: str, new_name: str) -> bool:
         """Rename torrent display name.
 
         Args:
@@ -156,9 +188,10 @@ class QBitClient:
             new_name: New name for the torrent
 
         Returns:
-            True if successful, False otherwise
+            True if API call succeeded, False otherwise
         """
         try:
+            await self._apply_rate_limit()
             client = self._ensure_connected()
             client.torrents_rename(torrent_hash=torrent_hash, new_torrent_name=new_name)
             logger.info(f"Renamed torrent {torrent_hash[:8]}... to '{new_name}'")
@@ -167,7 +200,7 @@ class QBitClient:
             logger.error(f"Error renaming torrent: {e}")
             return False
 
-    def rename_folder(self, torrent_hash: str, old_path: str, new_path: str) -> bool:
+    async def rename_folder(self, torrent_hash: str, old_path: str, new_path: str) -> bool:
         """Rename a folder within a torrent.
 
         Args:
@@ -176,9 +209,10 @@ class QBitClient:
             new_path: New folder path
 
         Returns:
-            True if successful, False otherwise
+            True if API call succeeded, False otherwise
         """
         try:
+            await self._apply_rate_limit()
             client = self._ensure_connected()
             client.torrents_rename_folder(
                 torrent_hash=torrent_hash, old_path=old_path, new_path=new_path
@@ -189,7 +223,7 @@ class QBitClient:
             logger.error(f"Error renaming folder: {e}")
             return False
 
-    def rename_file(self, torrent_hash: str, old_path: str, new_path: str) -> bool:
+    async def rename_file(self, torrent_hash: str, old_path: str, new_path: str) -> bool:
         """Rename a file within a torrent.
 
         Args:
@@ -198,9 +232,10 @@ class QBitClient:
             new_path: New file path
 
         Returns:
-            True if successful, False otherwise
+            True if API call succeeded, False otherwise
         """
         try:
+            await self._apply_rate_limit()
             client = self._ensure_connected()
             client.torrents_rename_file(
                 torrent_hash=torrent_hash, old_path=old_path, new_path=new_path

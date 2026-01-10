@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     max_retries: int = Field(default=10)
     retry_delay: float = Field(default=3.0)
 
+    # API operation delay (milliseconds between qBittorrent API calls)
+    # Helps prevent silent failures when renaming many files
+    api_operation_delay_ms: int = Field(default=100)
+
     # Config file path
     rules_file: str = Field(default="/config/rename_rules.yaml")
 
