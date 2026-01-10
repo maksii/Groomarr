@@ -225,24 +225,37 @@ def apply_rename_rules(original_name: str, rules: RenameRules) -> str:
 # Episode Identifier Handling
 # =============================================================================
 
-# Pattern to match episode identifiers: S01E01, S01 E01, S01EP01, etc.
-# Captures: season number, optional space, episode marker (E or EP), episode number
-EPISODE_PATTERN = re.compile(r"S(\d+)\s*(E(?:P)?)\s*(\d+)", re.IGNORECASE)
+# Pattern to match episode identifiers: S01E01, S01 E01, S01EP01, S01_E001, etc.
+# Captures: season number, separator, episode marker (E or EP), episode number
+# Handles: S01E01, S01 E01, S01EP01, S01_E001, [S01_E001], etc.
+EPISODE_PATTERN = re.compile(r"S(\d+)[\s_]*(E(?:P)?)\s*(\d+)", re.IGNORECASE)
+
+# Pattern for bracketed season_episode: [S01_E001], [S01 E05]
+BRACKETED_EPISODE_PATTERN = re.compile(r"\[S(\d+)[\s_]*(E(?:P)?)\s*(\d+)\]", re.IGNORECASE)
 
 # Pattern to match season-only identifier: S01, S02, etc.
-SEASON_ONLY_PATTERN = re.compile(r"S(\d+)(?!\s*E)", re.IGNORECASE)
+SEASON_ONLY_PATTERN = re.compile(r"S(\d+)(?![\s_]*E)", re.IGNORECASE)
+
+# Unicode dashes: regular hyphen (-), en-dash (–), em-dash (—)
+DASHES = r"\-\u2013\u2014"
 
 # Alternative episode patterns for anime and other formats
 # These patterns extract just the episode number (no season)
 ALTERNATIVE_EPISODE_PATTERNS = [
-    # Anime style: "- 10", " - 01 ", "- 13" (hyphen separated)
-    re.compile(r"[\s\-_]\-\s*(\d{1,4})(?:\s|\.|\)|$|\[)", re.IGNORECASE),
-    # Episode marker: "Episode 10", "Ep 05", "EP10"
+    # Anime style with any dash: "- 10", "– 01", "— 13" (hyphen/en-dash/em-dash separated)
+    re.compile(rf"[\s{DASHES}_][{DASHES}]\s*(\d{{1,4}})(?:\s|\.|\)|$|\[)", re.IGNORECASE),
+    # Episode marker: "Episode 10", "Ep 05", "EP10", "Ep.10"
     re.compile(r"\b(?:Episode|Ep)[\.\s]*(\d{1,4})\b", re.IGNORECASE),
     # Hash number: "#10", "# 05"
     re.compile(r"#\s*(\d{1,4})\b"),
-    # Bracketed episode at end of name part: "SeriesName [10]" or "Name (10)"
-    re.compile(r"[\[\(](\d{1,4})[\]\)]"),
+    # "X of Y" or "X з Y" (Ukrainian) or "X из Y" (Russian) pattern: [12 з 12], [5 of 10]
+    re.compile(r"\[(\d{1,4})\s*(?:з|of|из|von)\s*\d+\]", re.IGNORECASE),
+    # Bracketed standalone episode: "[10]" or "(10)" but NOT "[1080p]" or "(2024)"
+    re.compile(r"[\[\(](\d{1,3})[\]\)](?!\s*[pi])"),
+    # Number immediately before bracket: "Name 15[WEBRip" or "Name 01["
+    re.compile(r"\s(\d{1,4})(?=[\[\(])"),
+    # Trailing space + number before extension: "Name 01.mkv", "Name 15.mkv"
+    re.compile(r"\s(\d{1,4})(?:\.(?:mkv|mp4|avi|mov|wmv|flv|webm|m4v|ts))?$", re.IGNORECASE),
     # Dot or underscore separated standalone number (not year, not resolution)
     # Matches: ".10." or "_10_" but not ".1080." or ".2024."
     re.compile(r"[._](\d{1,3})[._](?!\d)"),
@@ -252,8 +265,8 @@ ALTERNATIVE_EPISODE_PATTERNS = [
 def extract_episode_identifier(filename: str) -> tuple[str, str, str] | None:
     """Extract episode identifier from a filename.
 
-    Matches patterns like: S01E01, S01 E01, S01EP01, s01e01, S01 EP01, etc.
-    Also handles anime patterns like: "- 10", "Episode 10", "#10"
+    Matches patterns like: S01E01, S01 E01, S01EP01, s01e01, S01 EP01, [S01_E001], etc.
+    Also handles anime patterns like: "- 10", "– 10", "Episode 10", "#10", "[12 з 12]"
 
     Args:
         filename: Original filename to extract from
@@ -263,7 +276,15 @@ def extract_episode_identifier(filename: str) -> tuple[str, str, str] | None:
         Example: ("01", "E", "02") for S01E02 or S01 E02
         For anime patterns without season: ("01", "E", "10") using season 01 as default
     """
-    # First try standard S01E01 pattern
+    # First try bracketed pattern [S01_E001] - common in some release groups
+    match = BRACKETED_EPISODE_PATTERN.search(filename)
+    if match:
+        season_num = match.group(1)
+        ep_marker = match.group(2).upper()
+        episode_num = match.group(3)
+        return (season_num, ep_marker, episode_num)
+
+    # Try standard S01E01 pattern
     match = EPISODE_PATTERN.search(filename)
     if match:
         season_num = match.group(1)
@@ -282,8 +303,9 @@ def extract_episode_identifier(filename: str) -> tuple[str, str, str] | None:
                 continue  # Likely a year
             if num_int in (480, 576, 720, 1080, 2160, 4320):
                 continue  # Likely a resolution
-            # Zero-pad to 2 digits for consistency
-            episode_num_padded = episode_num.zfill(2)
+            # Preserve original padding if 3+ digits (e.g., 001, 450)
+            # Otherwise zero-pad to 2 digits for consistency
+            episode_num_padded = episode_num if len(episode_num) >= 3 else episode_num.zfill(2)
             # Default to season 01 for anime-style patterns
             return ("01", "E", episode_num_padded)
 

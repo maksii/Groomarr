@@ -410,6 +410,99 @@ class TestExtractEpisodeIdentifier:
         result = extract_episode_identifier("[Group] Series - 10 S01E05 720p.mkv")
         assert result == ("01", "E", "05")  # Standard pattern wins
 
+    # New patterns from user's real-world examples
+    def test_en_dash_format(self):
+        """Test en-dash (–) separator: 'Блукач Кеншін – 01'."""
+        result = extract_episode_identifier("Блукач Кеншін – 01 (Сезон 2)[1080p][Clan Kaizoku].mkv")
+        assert result is not None
+        assert result[2] == "01"
+
+    def test_em_dash_format(self):
+        """Test em-dash (—) separator."""
+        result = extract_episode_identifier("Series Name — 05 [1080p].mkv")
+        assert result is not None
+        assert result[2] == "05"
+
+    def test_trailing_space_number(self):
+        """Test trailing space + number: '[РГ] Магічна Битва 3 01.mkv'."""
+        result = extract_episode_identifier("[РГ] Магічна Битва 3 01.mkv")
+        assert result is not None
+        assert result[2] == "01"
+
+    def test_trailing_space_number_double_digit(self):
+        """Test trailing space + number: '[РГ] Алхімічна крамничка Сараси 12.mkv'."""
+        result = extract_episode_identifier("[РГ] Алхімічна крамничка Сараси 12.mkv")
+        assert result is not None
+        assert result[2] == "12"
+
+    def test_number_before_bracket(self):
+        """Test number immediately before bracket: 'принцеси 15[WEBRip'."""
+        result = extract_episode_identifier(
+            "[РГ] Маленькі клопоти магічної принцеси 15[WEBRip Ai Rem 1080p x264 AAC].mkv"
+        )
+        assert result is not None
+        assert result[2] == "15"
+
+    def test_number_before_bracket_no_space(self):
+        """Test number before bracket without space: 'Name 13['."""
+        result = extract_episode_identifier("[РГ] Маленькі клопоти магічної принцеси 13[WEBRip.mkv")
+        assert result is not None
+        assert result[2] == "13"
+
+    def test_ukrainian_of_pattern(self):
+        """Test Ukrainian 'of' pattern: '[12 з 12]'."""
+        result = extract_episode_identifier(
+            "[РГ] Алхімічна крамничка Сараси [12 з 12] [WEBRip Ai Rem 1080p].mkv"
+        )
+        assert result is not None
+        assert result[2] == "12"
+
+    def test_english_of_pattern(self):
+        """Test English 'of' pattern: '[5 of 10]'."""
+        result = extract_episode_identifier("Series Name [5 of 10] 1080p.mkv")
+        assert result is not None
+        assert result[2] == "05"
+
+    def test_russian_of_pattern(self):
+        """Test Russian 'of' pattern: '[8 из 12]'."""
+        result = extract_episode_identifier("Сериал [8 из 12] 720p.mkv")
+        assert result is not None
+        assert result[2] == "08"
+
+    def test_bracketed_season_episode_underscore(self):
+        """Test bracketed [S01_E001] pattern from Naruto releases."""
+        result = extract_episode_identifier("[TV-1] [S01_E001] Naruto BDRemux 1080 [UKR_JAP].mkv")
+        assert result is not None
+        assert result[0] == "01"  # Season
+        assert result[2] == "001"  # Episode (3 digits preserved)
+
+    def test_bracketed_season_episode_three_digit(self):
+        """Test 3-digit episode: [S01_E450]."""
+        result = extract_episode_identifier("[TV-1] [S01_E450] Naruto BDRemux 1080.mkv")
+        assert result is not None
+        assert result[0] == "01"
+        assert result[2] == "450"
+
+    def test_three_digit_episode_standard(self):
+        """Test 3-digit episode in standard format: S01E001."""
+        result = extract_episode_identifier("Long Series S01E001 1080p.mkv")
+        assert result is not None
+        assert result[2] == "001"
+
+    def test_three_digit_episode_preserved(self):
+        """Test that 3-digit episode numbers are preserved (not truncated)."""
+        result = extract_episode_identifier("Series S02E220 HDTV.mkv")
+        assert result is not None
+        assert result[0] == "02"
+        assert result[2] == "220"
+
+    def test_underscore_season_episode(self):
+        """Test S01_E01 format with underscore separator."""
+        result = extract_episode_identifier("Series_Name_S01_E05_720p.mkv")
+        assert result is not None
+        assert result[0] == "01"
+        assert result[2] == "05"
+
 
 class TestBuildEpisodeIdentifier:
     """Test episode identifier string building."""
