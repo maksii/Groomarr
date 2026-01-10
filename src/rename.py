@@ -566,7 +566,10 @@ class RenameConflictError(Exception):
 
 
 def validate_rename_plan(
-    files: list[dict[str, Any]], new_name: str, root_folder: str | None
+    files: list[dict[str, Any]],
+    new_name: str,
+    root_folder: str | None,
+    preserve_folder: bool = False,
 ) -> tuple[list[tuple[str, str]], list[str]]:
     """Validate rename plan and detect potential conflicts.
 
@@ -577,6 +580,8 @@ def validate_rename_plan(
         files: List of file info dicts from qBittorrent
         new_name: New name to use for renaming
         root_folder: Root folder if exists
+        preserve_folder: If True, keep files in original folder (for renaming
+                         files before folder). If False, use new_name as folder.
 
     Returns:
         Tuple of (rename_plan, warnings) where:
@@ -646,7 +651,11 @@ def validate_rename_plan(
 
         # Build new path
         new_path = build_new_file_path(
-            old_path, new_name, root_folder, episode_override=episode_info
+            old_path,
+            new_name,
+            root_folder,
+            episode_override=episode_info,
+            preserve_folder=preserve_folder,
         )
 
         rename_plan.append((old_path, new_path))
@@ -719,6 +728,7 @@ def build_new_file_path(
     new_name: str,
     root_folder: str | None,
     episode_override: tuple[str, str, str] | None = None,
+    preserve_folder: bool = False,
 ) -> str:
     """Build new file path based on rename.
 
@@ -732,6 +742,8 @@ def build_new_file_path(
         episode_override: Optional episode info tuple (season, marker, episode)
                           to use instead of extracting from filename.
                           Used for batch-detected episodes.
+        preserve_folder: If True, keep files in original folder (for renaming
+                         files before folder). If False, use new_name as folder.
 
     Returns:
         New file path
@@ -758,14 +770,17 @@ def build_new_file_path(
 
     # If file is in root folder, preserve structure
     if root_folder and old_path.startswith(root_folder + "/"):
+        # Determine folder name: keep original if preserve_folder, otherwise use new_name
+        folder_name = root_folder if preserve_folder else new_name
+
         # Get relative path after root folder
         relative = old_path[len(root_folder) + 1 :]
         if "/" in relative:
             # Keep subdirectory structure
             subdir = relative.rsplit("/", 1)[0]
-            return f"{new_name}/{subdir}/{file_base_name}{ext}"
+            return f"{folder_name}/{subdir}/{file_base_name}{ext}"
         else:
-            return f"{new_name}/{file_base_name}{ext}"
+            return f"{folder_name}/{file_base_name}{ext}"
 
     # Single file or flat structure
     return f"{file_base_name}{ext}"
@@ -809,11 +824,32 @@ async def perform_rename(
     files = qbit.get_files(torrent_hash)
     root_folder = get_root_folder(files)
 
+    # Determine if we're renaming both files and folder
+    # If so, we need to rename files FIRST (keeping them in original folder),
+    # then rename the folder to avoid "file not found" errors
+    renaming_folder = (
+        mode
+        in [
+            RenameMode.TORRENT_AND_FOLDER,
+            RenameMode.TORRENT_FOLDER_FILES,
+            RenameMode.FOLDER_ONLY,
+        ]
+        and root_folder
+        and root_folder != new_name
+    )
+
+    renaming_files = mode in [RenameMode.TORRENT_FOLDER_FILES, RenameMode.FILES_ONLY]
+
     # Validate file rename plan if we're renaming files
     rename_plan: list[tuple[str, str]] = []
-    if mode in [RenameMode.TORRENT_FOLDER_FILES, RenameMode.FILES_ONLY]:
+    if renaming_files:
+        # When renaming both files and folder, keep files in original folder first
+        # The folder rename will move them to the new location
+        preserve_folder = renaming_folder
         try:
-            rename_plan, warnings = validate_rename_plan(files, new_name, root_folder)
+            rename_plan, warnings = validate_rename_plan(
+                files, new_name, root_folder, preserve_folder=preserve_folder
+            )
 
             # Log warnings for partial conflicts
             for warning in warnings:
@@ -829,7 +865,7 @@ async def perform_rename(
 
     success = True
 
-    # Rename torrent display name
+    # Rename torrent display name first (this doesn't affect file paths)
     if mode in [
         RenameMode.TORRENT_ONLY,
         RenameMode.TORRENT_AND_FOLDER,
@@ -838,23 +874,27 @@ async def perform_rename(
         if not qbit.rename_torrent(torrent_hash, new_name):
             success = False
 
-    # Rename root folder
-    if mode in [
-        RenameMode.TORRENT_AND_FOLDER,
-        RenameMode.TORRENT_FOLDER_FILES,
-        RenameMode.FOLDER_ONLY,
-    ]:
-        if root_folder and root_folder != new_name:
-            if not qbit.rename_folder(torrent_hash, root_folder, new_name):
-                success = False
-        elif not root_folder:
-            logger.debug(f"Torrent {hash_short}... has no root folder to rename")
-
-    # Rename individual files using validated plan
-    if mode in [RenameMode.TORRENT_FOLDER_FILES, RenameMode.FILES_ONLY]:
+    # Rename individual files BEFORE folder (to avoid path invalidation)
+    # Files are renamed in-place within original folder, then folder is renamed
+    if renaming_files:
         for old_path, new_path in rename_plan:
             if old_path != new_path:
                 if not qbit.rename_file(torrent_hash, old_path, new_path):
                     success = False
+
+    # Rename root folder AFTER files (folder rename updates all file paths)
+    if renaming_folder:
+        if not qbit.rename_folder(torrent_hash, root_folder, new_name):
+            success = False
+    elif (
+        mode
+        in [
+            RenameMode.TORRENT_AND_FOLDER,
+            RenameMode.TORRENT_FOLDER_FILES,
+            RenameMode.FOLDER_ONLY,
+        ]
+        and not root_folder
+    ):
+        logger.debug(f"Torrent {hash_short}... has no root folder to rename")
 
     return success
