@@ -312,11 +312,80 @@ def extract_episode_identifier(filename: str) -> tuple[str, str, str] | None:
     return None
 
 
+def _is_valid_episode_sequence(numbers: list[int], file_count: int) -> tuple[bool, float]:
+    """Check if a list of numbers forms a valid episode sequence.
+
+    A valid episode sequence should:
+    - Be unique numbers (no duplicates)
+    - Be in ascending order (when sorted)
+    - Not have excessively large gaps
+    - Start from a reasonable episode number
+
+    Args:
+        numbers: List of candidate episode numbers
+        file_count: Number of files being analyzed
+
+    Returns:
+        Tuple of (is_valid, score) where score indicates sequence quality (higher is better)
+    """
+    if len(numbers) != file_count:
+        return False, 0.0
+
+    sorted_nums = sorted(numbers)
+    min_num, max_num = sorted_nums[0], sorted_nums[-1]
+
+    # Calculate range statistics
+    actual_range = max_num - min_num + 1
+    expected_range = file_count
+
+    # Reject if minimum is unreasonably high (episodes usually start low)
+    # Allow up to 999 for long-running series like anime (Naruto has 700+)
+    if min_num > 999:
+        return False, 0.0
+
+    # Reject if max is unreasonably high relative to file count
+    # For example, 5 files shouldn't have numbers like 500, 600, 700, 800, 900
+    # Allow max to be reasonable for episode counts
+    max_reasonable = max(file_count * 50, 100)  # At least 100, or 50x file count
+    if max_num > max_reasonable:
+        return False, 0.0
+
+    # Check for ascending sequence with reasonable gaps
+    # Calculate gap statistics
+    gaps = [sorted_nums[i + 1] - sorted_nums[i] for i in range(len(sorted_nums) - 1)]
+    max_gap = max(gaps) if gaps else 1
+    avg_gap = sum(gaps) / len(gaps) if gaps else 1
+
+    # Reject if there are huge gaps between consecutive episodes
+    # Allow gaps up to 10 for anime (missing episodes, specials, etc.)
+    if max_gap > 10:
+        return False, 0.0
+
+    # Calculate quality score (higher is better)
+    # Perfect sequence (1,2,3...) scores 1.0
+    # Sequences with gaps score lower
+    # Sequences starting from 1 or 0 get a bonus
+    contiguity_score = expected_range / actual_range  # 1.0 for perfect, lower for gaps
+    start_bonus = 0.2 if min_num <= 1 else 0.0
+    gap_penalty = (avg_gap - 1) * 0.05  # Small penalty for average gap > 1
+
+    score = contiguity_score + start_bonus - gap_penalty
+
+    return True, score
+
+
 def extract_episode_from_batch(filenames: list[str]) -> dict[str, str]:
     """Analyze a batch of filenames to find unique episode identifiers.
 
     When standard episode patterns fail, this function analyzes all filenames
-    together to find numbers that uniquely identify each file in sequence.
+    together to find numbers that uniquely identify each file in a proper
+    ascending sequence.
+
+    The function validates that:
+    - Each file has a unique number
+    - Numbers form an ascending sequence
+    - Sequence is reasonably contiguous (no huge gaps)
+    - Numbers are plausible episode numbers (not years, resolutions, etc.)
 
     Args:
         filenames: List of filenames (without path) to analyze
@@ -351,51 +420,67 @@ def extract_episode_from_batch(filenames: list[str]) -> dict[str, str]:
     if not file_numbers:
         return {}
 
-    # Find which number position has unique values that match the expected count
+    # Find which number position has unique values that form a valid sequence
     # Group numbers by their position index within each filename
     max_positions = max(len(nums) for nums in file_numbers.values()) if file_numbers else 0
 
+    best_result: dict[str, str] | None = None
+    best_score = 0.0
+
     for pos_idx in range(max_positions):
-        # Get the number at this position from each file
-        pos_numbers: dict[str, int] = {}
+        # Get the number at this position from each file, preserving original string
+        pos_numbers: dict[str, tuple[int, str]] = {}  # fname -> (int_value, original_str)
         for fname, nums in file_numbers.items():
             if pos_idx < len(nums):
-                pos_numbers[fname] = nums[pos_idx][1]
+                pos, num_int = nums[pos_idx]
+                # Extract the original number string from filename to preserve padding
+                name_no_ext = fname.rsplit(".", 1)[0] if "." in fname else fname
+                # Find the original string representation
+                match = re.search(r"(?<![0-9])(\d{1,4})(?![0-9])", name_no_ext[pos:])
+                original_str = match.group(1) if match else str(num_int)
+                pos_numbers[fname] = (num_int, original_str)
 
         # Check if we have a number from every file at this position
         if len(pos_numbers) != len(filenames):
             continue
 
         # Check if all numbers are unique
-        unique_nums = set(pos_numbers.values())
-        if len(unique_nums) != len(filenames):
+        unique_nums = [v[0] for v in pos_numbers.values()]
+        if len(set(unique_nums)) != len(filenames):
             continue
 
-        # Check if numbers form a reasonable sequence (within expected range)
-        sorted_nums = sorted(unique_nums)
-        min_num, max_num = sorted_nums[0], sorted_nums[-1]
-
-        # Validate: should be a reasonable episode sequence
-        # - Not too spread out (max should be at most 3x the count)
-        # - Minimum should be reasonable (0-999 for episodes)
-        if max_num > len(filenames) * 3 or min_num > 999:
+        # Validate that numbers form a proper ascending sequence
+        is_valid, score = _is_valid_episode_sequence(unique_nums, len(filenames))
+        if not is_valid:
             continue
 
-        # Found a valid episode identifier position!
-        # Determine padding width based on max number
-        pad_width = max(2, len(str(max_num)))
+        # Track the best sequence found (highest score)
+        if score > best_score:
+            best_score = score
+            sorted_nums = sorted(set(unique_nums))
+            min_num, max_num = sorted_nums[0], sorted_nums[-1]
 
-        result = {}
-        for fname, num in pos_numbers.items():
-            result[fname] = str(num).zfill(pad_width)
+            # Determine padding width:
+            # 1. Check if source files have consistent padding (e.g., 001, 002)
+            # 2. Otherwise use max number width, minimum 2
+            original_lengths = [len(v[1]) for v in pos_numbers.values()]
+            if len(set(original_lengths)) == 1 and original_lengths[0] >= 2:
+                # All files have same padding, preserve it
+                pad_width = original_lengths[0]
+            else:
+                # Mixed or no padding, use sensible default
+                pad_width = max(2, len(str(max_num)))
 
-        logger.debug(
-            f"Batch analysis found episode numbers at position {pos_idx}: "
-            f"{sorted_nums[0]}-{sorted_nums[-1]} for {len(filenames)} files"
-        )
-        return result
+            best_result = {}
+            for fname, (num_int, _) in pos_numbers.items():
+                best_result[fname] = str(num_int).zfill(pad_width)
 
-    return {}
+            logger.debug(
+                f"Batch analysis found episode sequence at position {pos_idx}: "
+                f"{min_num}-{max_num} for {len(filenames)} files (score: {score:.2f})"
+            )
+
+    return best_result or {}
 
 
 def build_episode_identifier(season: str, ep_marker: str, episode: str) -> str:

@@ -735,6 +735,101 @@ class TestExtractEpisodeFromBatch:
         values = list(result.values())
         assert "1080" not in values
 
+    def test_ascending_sequence_required(self):
+        """Test that batch detection requires ascending sequence."""
+        # Perfect ascending sequence 1-5 should work
+        filenames = [
+            "Episode 1.mkv",
+            "Episode 2.mkv",
+            "Episode 3.mkv",
+            "Episode 4.mkv",
+            "Episode 5.mkv",
+        ]
+        result = extract_episode_from_batch(filenames)
+        assert len(result) == 5
+        # Verify order is preserved
+        values = [int(result[f]) for f in filenames]
+        assert values == [1, 2, 3, 4, 5]
+
+    def test_sequence_with_small_gaps(self):
+        """Test that sequences with small gaps (missing episodes) work."""
+        # 1, 2, 4, 5, 6 - gap of 1 episode (3 is missing)
+        filenames = [
+            "Episode 1.mkv",
+            "Episode 2.mkv",
+            "Episode 4.mkv",
+            "Episode 5.mkv",
+            "Episode 6.mkv",
+        ]
+        result = extract_episode_from_batch(filenames)
+        assert len(result) == 5
+
+    def test_sequence_with_huge_gaps_rejected(self):
+        """Test that sequences with huge gaps are rejected."""
+        # 1, 10, 20, 30, 40 - gaps of 10, not a proper episode sequence
+        filenames = [
+            "File 1.mkv",
+            "File 10.mkv",
+            "File 20.mkv",
+            "File 30.mkv",
+            "File 40.mkv",
+        ]
+        result = extract_episode_from_batch(filenames)
+        # Should fail because gaps are too large
+        assert result == {}
+
+    def test_random_numbers_rejected(self):
+        """Test that random non-sequential numbers are rejected."""
+        # Random numbers that don't form a sequence
+        filenames = [
+            "File 7.mkv",
+            "File 23.mkv",
+            "File 45.mkv",
+            "File 89.mkv",
+            "File 156.mkv",
+        ]
+        result = extract_episode_from_batch(filenames)
+        # Should fail because numbers don't form a reasonable sequence
+        assert result == {}
+
+    def test_prefers_better_sequence(self):
+        """Test that batch detection prefers sequences starting from 1."""
+        # Files have multiple numbers, should prefer the episode-like sequence
+        filenames = [
+            "S01 Episode 1 720p.mkv",
+            "S01 Episode 2 720p.mkv",
+            "S01 Episode 3 720p.mkv",
+        ]
+        result = extract_episode_from_batch(filenames)
+        assert len(result) == 3
+        # Should detect 1,2,3 not 01,01,01 (season) or 720,720,720 (resolution)
+        values = sorted([int(result[f]) for f in filenames])
+        assert values == [1, 2, 3]
+
+    def test_full_season_sequence(self):
+        """Test detection of full season (13 episodes typical for anime)."""
+        filenames = [f"Anime - {i:02d}.mkv" for i in range(1, 14)]
+        result = extract_episode_from_batch(filenames)
+        assert len(result) == 13
+        # Verify all episodes detected in order
+        for i, fname in enumerate(filenames, start=1):
+            assert int(result[fname]) == i
+
+    def test_three_digit_sequence(self):
+        """Test detection of 3-digit episode sequence (long series)."""
+        # Simulates Naruto-style with 220 episodes (subset)
+        filenames = [
+            "Series 001.mkv",
+            "Series 002.mkv",
+            "Series 003.mkv",
+            "Series 004.mkv",
+            "Series 005.mkv",
+        ]
+        result = extract_episode_from_batch(filenames)
+        assert len(result) == 5
+        assert result["Series 001.mkv"] == "001"
+        assert result["Series 005.mkv"] == "005"
+
     def test_no_unique_numbers_returns_empty(self):
         """Test that files without unique identifying numbers return empty."""
         filenames = [
