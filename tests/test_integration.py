@@ -727,16 +727,12 @@ class TestFindTorrentEndpoint:
         torrent2 = MagicMock()
         torrent2.hash = "XYZ789ABC123DEF456GHI789JKL012MNO345PQR"
         torrent2.name = "Torrent.With.ID"
-        torrent2.comment = (
-            "This torrent was downloaded from domain. https://domain/torrents/342558"
-        )
+        torrent2.comment = "This torrent was downloaded from domain. https://domain/torrents/342558"
 
         torrent3 = MagicMock()
         torrent3.hash = "DEF456GHI789JKL012MNO345PQR678STU901ABC"
         torrent3.name = "Another.Torrent"
-        torrent3.comment = (
-            "This torrent was downloaded from domain. https://domain/torrents/999999"
-        )
+        torrent3.comment = "This torrent was downloaded from domain. https://domain/torrents/999999"
 
         mock_qbit_client._mock_torrents_list[:] = [torrent1, torrent2, torrent3]
 
@@ -764,9 +760,7 @@ class TestFindTorrentEndpoint:
         torrent2 = MagicMock()
         torrent2.hash = "XYZ789ABC123DEF456GHI789JKL012MNO345PQR"
         torrent2.name = "Torrent.With.ID"
-        torrent2.comment = (
-            "This torrent was downloaded from domain. https://domain/torrents/342558"
-        )
+        torrent2.comment = "This torrent was downloaded from domain. https://domain/torrents/342558"
 
         mock_qbit_client._mock_torrents_list[:] = [torrent1, torrent2]
 
@@ -794,9 +788,7 @@ class TestFindTorrentEndpoint:
         torrent2 = MagicMock()
         torrent2.hash = "XYZ789ABC123DEF456GHI789JKL012MNO345PQR"
         torrent2.name = "Torrent.With.Different.ID"
-        torrent2.comment = (
-            "This torrent was downloaded from domain. https://domain/torrents/999999"
-        )
+        torrent2.comment = "This torrent was downloaded from domain. https://domain/torrents/999999"
 
         mock_qbit_client._mock_torrents_list[:] = [torrent1, torrent2]
 
@@ -889,16 +881,12 @@ class TestFindTorrentEndpoint:
         torrent1 = MagicMock()
         torrent1.hash = "FIRST123DEF456GHI789JKL012MNO345PQR678STU"
         torrent1.name = "First.Torrent"
-        torrent1.comment = (
-            "This torrent was downloaded from domain. https://domain/torrents/342558"
-        )
+        torrent1.comment = "This torrent was downloaded from domain. https://domain/torrents/342558"
 
         torrent2 = MagicMock()
         torrent2.hash = "SECOND789ABC123DEF456GHI789JKL012MNO345PQR"
         torrent2.name = "Second.Torrent"
-        torrent2.comment = (
-            "This torrent was downloaded from domain. https://domain/torrents/342558"
-        )
+        torrent2.comment = "This torrent was downloaded from domain. https://domain/torrents/342558"
 
         mock_qbit_client._mock_torrents_list[:] = [torrent1, torrent2]
 

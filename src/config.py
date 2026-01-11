@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 import yaml
-from pydantic import Field
+from pydantic import ConfigDict, Field
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -96,9 +96,7 @@ class Settings(BaseSettings):
     # Config file path
     rules_file: str = Field(default="/config/rename_rules.yaml")
 
-    class Config:
-        env_prefix = ""
-        case_sensitive = False
+    model_config = ConfigDict(env_prefix="", case_sensitive=False)
 
 
 class TrackerRules:
