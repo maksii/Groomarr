@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any
 
@@ -245,3 +246,50 @@ class QBitClient:
         except Exception as e:
             logger.error(f"Error renaming file: {e}")
             return False
+
+    def get_all_torrents(self) -> list[dict[str, Any]]:
+        """Get all torrents from qBittorrent.
+
+        Returns:
+            List of torrent info dicts
+        """
+        try:
+            client = self._ensure_connected()
+            return list(client.torrents_info())
+        except Exception as e:
+            logger.error(f"Error getting all torrents: {e}")
+            return []
+
+    def find_torrent_by_comment_id(self, torrent_id: str) -> dict[str, Any] | None:
+        """Find a torrent by matching ID in its comment property.
+
+        Searches through all torrents and checks if the comment contains
+        the specified torrent ID.
+
+        Args:
+            torrent_id: The torrent ID to search for
+
+        Returns:
+            Torrent info dict if found, None otherwise
+        """
+        try:
+            torrents = self.get_all_torrents()
+            for torrent in torrents:
+                comment = getattr(torrent, "comment", "") or ""
+                # Check if comment contains the torrent ID
+                # Pattern: "https://domain/torrents/342558" or just "342558"
+                if torrent_id in comment:
+                    # Verify it's a proper match (not just a substring)
+                    # Look for the ID as a standalone number or in the URL pattern
+                    # Match ID as standalone number or in URL pattern
+                    pattern = rf"(?:/torrents/|^|\s)({re.escape(torrent_id)})(?:/|$|\s)"
+                    if re.search(pattern, comment):
+                        logger.info(
+                            f"Found torrent with ID {torrent_id} in comment: "
+                            f"hash={torrent.hash[:8]}... name='{torrent.name}'"
+                        )
+                        return torrent
+            return None
+        except Exception as e:
+            logger.error(f"Error finding torrent by comment ID: {e}")
+            return None

@@ -8,7 +8,7 @@ import pytest
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.config import RenameRules
+from src.config import RenameRules, TrackerRules, matches_indexer
 from src.rename import (
     RenameConflictError,
     apply_rename_rules,
@@ -113,36 +113,36 @@ class TestApplyRenameRules:
     """Test rename rules application."""
 
     def test_no_rules(self):
-        rules = RenameRules()
+        rules = TrackerRules()
         result = apply_rename_rules("Original Name", rules)
         assert result == "Original Name"
 
     def test_add_prefix(self):
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.prefix = "[AUTO] "
         result = apply_rename_rules("Movie Name", rules)
         assert result == "[AUTO] Movie Name"
 
     def test_add_suffix(self):
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.suffix = " [Renamed]"
         result = apply_rename_rules("Movie Name", rules)
         assert result == "Movie Name [Renamed]"
 
     def test_remove_pattern(self):
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.remove_patterns = [r"-\w+$"]  # Remove release group
         result = apply_rename_rules("Movie.2024.1080p.WEB-GroupX", rules)
         assert result == "Movie.2024.1080p.WEB"
 
     def test_replace_pattern(self):
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.replace_patterns = {r"\.": " "}  # Dots to spaces
         result = apply_rename_rules("Movie.Name.2024", rules)
         assert result == "Movie Name 2024"
 
     def test_skip_pattern(self):
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.remove_patterns = [r"-\w+$"]
         rules.skip_title_patterns = ["PROPER"]
 
@@ -151,7 +151,7 @@ class TestApplyRenameRules:
         assert result == "Movie.2024.PROPER-GROUP"
 
     def test_combined_rules(self):
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.remove_patterns = [r"\[.*?\]", r"-\w+$"]
         rules.replace_patterns = {r"\.": " ", r"\s+": " "}
 
@@ -164,7 +164,7 @@ class TestRenameRulesFromSampleData:
 
     def test_radarr_release_title(self):
         """Test with actual release title from a Radarr grab."""
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.remove_patterns = [r"-\w+$"]  # Remove release group
 
         original = "Example Movie 2020 DE 4K Remaster BluRay 1080p ENG H.265-ReleaseGrp"
@@ -175,7 +175,7 @@ class TestRenameRulesFromSampleData:
 
     def test_clean_release_title(self):
         """Test cleaning up a release title with multiple rules."""
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.remove_patterns = [
             r"\[.*?\]",  # Remove bracketed tags
             r"-\w+$",  # Remove release group
@@ -201,7 +201,7 @@ class TestReleaseNameWithExtension:
 
     def test_release_with_mkv_extension(self):
         """Release title with .mkv extension should have it stripped."""
-        rules = RenameRules()
+        rules = TrackerRules()
         original = "Movie.2024.1080p.WEB-DL.x264-Group.mkv"
         result = apply_rename_rules(original, rules)
 
@@ -210,7 +210,7 @@ class TestReleaseNameWithExtension:
 
     def test_release_with_mp4_extension(self):
         """Release title with .mp4 extension should have it stripped."""
-        rules = RenameRules()
+        rules = TrackerRules()
         original = "Movie.2024.1080p.WEB-DL.x264-Group.mp4"
         result = apply_rename_rules(original, rules)
 
@@ -219,7 +219,7 @@ class TestReleaseNameWithExtension:
 
     def test_release_with_extension_and_rules(self):
         """Extension stripping works with other rename rules."""
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.replace_patterns = {r"\.": " ", r"\s+": " "}
 
         original = "Movie.2024.1080p.WEB-DL.mkv"
@@ -230,7 +230,7 @@ class TestReleaseNameWithExtension:
 
     def test_release_with_uppercase_extension(self):
         """Uppercase extensions should also be stripped."""
-        rules = RenameRules()
+        rules = TrackerRules()
         original = "Movie.2024.1080p.WEB-DL.x264-Group.MKV"
         result = apply_rename_rules(original, rules)
 
@@ -243,7 +243,7 @@ class TestReleaseNameWithExtension:
         When user configures Sonarr to grab by filename instead of release name,
         the release title may include the extension.
         """
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.replace_patterns = {r"\.": " ", r"\s+": " "}
 
         # Simulates: User grabs "Series.S01E05.1080p.WEB.mkv" as filename
@@ -1008,6 +1008,383 @@ class TestBuildNewFilePathWithOverride:
 
         result = build_new_file_path(old_path, new_name, "Folder", episode_override=None)
         assert "S01E03" in result
+
+
+class TestMatchesIndexer:
+    """Test indexer pattern matching for tracker-specific rules."""
+
+    def test_exact_match(self):
+        """Test exact string matching (case-insensitive)."""
+        assert matches_indexer("TrackerA", ["TrackerA"]) is True
+        assert matches_indexer("trackera", ["TrackerA"]) is True
+        assert matches_indexer("TRACKERA", ["TrackerA"]) is True
+        assert matches_indexer("TrackerB", ["TrackerA"]) is False
+
+    def test_exact_match_complex_names(self):
+        """Test exact matching with complex indexer names."""
+        assert matches_indexer("UTOPIA (API)-experimental", ["UTOPIA (API)-experimental"]) is True
+        assert matches_indexer("Toloka.to", ["Toloka.to"]) is True
+        assert matches_indexer("upload.cx (API)", ["upload.cx (API)"]) is True
+        assert matches_indexer("Secret Cinema", ["Secret Cinema"]) is True
+        assert matches_indexer("seedpool (API)", ["seedpool (API)"]) is True
+        assert matches_indexer("CinemaMovieS_ZT", ["CinemaMovieS_ZT"]) is True
+        assert matches_indexer("Free Farm (自由农场)", ["Free Farm (自由农场)"]) is True
+
+    def test_wildcard_match(self):
+        """Test wildcard pattern matching."""
+        assert matches_indexer("TrackerA (API)", ["TrackerA*"]) is True
+        assert matches_indexer("TrackerA (Prowlarr)", ["TrackerA*"]) is True
+        assert matches_indexer("TrackerB", ["TrackerA*"]) is False
+        assert matches_indexer("Secret Cinema", ["*Cinema*"]) is True
+        assert matches_indexer("CinemaMovieS_ZT", ["*Cinema*"]) is True
+        assert matches_indexer("No Match", ["*Cinema*"]) is False
+
+    def test_wildcard_single_char(self):
+        """Test single character wildcard (?)."""
+        assert matches_indexer("Tracker1", ["Tracker?"]) is True
+        assert matches_indexer("TrackerA", ["Tracker?"]) is True
+        assert matches_indexer("Tracker10", ["Tracker?"]) is False  # Two chars don't match ?
+
+    def test_regex_match(self):
+        """Test regex pattern matching (wrapped in slashes)."""
+        assert matches_indexer("TrackerA (API)", ["/TrackerA.*API/"]) is True
+        assert matches_indexer("TrackerA-Prowlarr", ["/TrackerA.*API/"]) is False
+        assert matches_indexer("UTOPIA (API)-experimental", ["/UTOPIA.*experimental/"]) is True
+
+    def test_multiple_patterns(self):
+        """Test matching against multiple patterns."""
+        patterns = ["TrackerA*", "TrackerB*", "/Public.*/"]
+        assert matches_indexer("TrackerA (API)", patterns) is True
+        assert matches_indexer("TrackerB", patterns) is True
+        assert matches_indexer("PublicTracker", patterns) is True
+        assert matches_indexer("PrivateTracker", patterns) is False
+
+    def test_empty_patterns(self):
+        """Test with empty pattern list."""
+        assert matches_indexer("AnyTracker", []) is False
+
+    def test_invalid_regex_handled(self):
+        """Test that invalid regex patterns don't crash."""
+        # Invalid regex should be handled gracefully
+        assert matches_indexer("Test", ["/[invalid/"]) is False
+
+
+class TestTrackerRulesFromDict:
+    """Test TrackerRules creation from dictionary."""
+
+    def test_from_dict_full(self):
+        """Test loading all fields from dict."""
+        data = {
+            "indexers_include": ["TrackerA"],
+            "indexers_exclude": ["BadTracker"],
+            "qualities_include": ["Bluray-1080p"],
+            "qualities_exclude": ["CAM"],
+            "prefix": "[TEST] ",
+            "suffix": " [Auto]",
+            "remove_patterns": [r"\[.*?\]"],
+            "replace_patterns": {r"\.": " "},
+            "validate_custom_format_score": True,
+            "score_validation_policy": "warn",
+        }
+        rules = TrackerRules.from_dict(data)
+
+        assert rules.indexers_include == ["TrackerA"]
+        assert rules.indexers_exclude == ["BadTracker"]
+        assert rules.qualities_include == ["Bluray-1080p"]
+        assert rules.qualities_exclude == ["CAM"]
+        assert rules.prefix == "[TEST] "
+        assert rules.suffix == " [Auto]"
+        assert rules.remove_patterns == [r"\[.*?\]"]
+        assert rules.replace_patterns == {r"\.": " "}
+        assert rules.validate_custom_format_score is True
+        assert rules.score_validation_policy == "warn"
+
+    def test_from_dict_empty(self):
+        """Test loading from empty dict uses defaults."""
+        rules = TrackerRules.from_dict({})
+
+        assert rules.indexers_include == []
+        assert rules.prefix == ""
+        assert rules.validate_custom_format_score is False
+        assert rules.score_validation_policy == "block"
+
+    def test_from_dict_partial(self):
+        """Test loading only some fields."""
+        data = {"prefix": "[MyTracker] ", "qualities_exclude": ["CAM", "TS"]}
+        rules = TrackerRules.from_dict(data)
+
+        assert rules.prefix == "[MyTracker] "
+        assert rules.qualities_exclude == ["CAM", "TS"]
+        assert rules.indexers_include == []  # Default
+        assert rules.suffix == ""  # Default
+
+
+class TestRenameRulesHierarchical:
+    """Test hierarchical RenameRules loading and rule resolution."""
+
+    def test_legacy_flat_format(self, tmp_path):
+        """Test loading legacy flat format (no global/trackers keys)."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+indexers_exclude:
+  - "BadTracker"
+prefix: "[Legacy] "
+validate_custom_format_score: true
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        assert rules.config_found is True
+        assert rules.global_rules.indexers_exclude == ["BadTracker"]
+        assert rules.global_rules.prefix == "[Legacy] "
+        assert rules.global_rules.validate_custom_format_score is True
+        assert rules.trackers == []
+
+    def test_hierarchical_format_global_only(self, tmp_path):
+        """Test hierarchical format with only global rules."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  indexers_exclude:
+    - "PublicTracker"
+  prefix: "[Global] "
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        assert rules.global_rules.indexers_exclude == ["PublicTracker"]
+        assert rules.global_rules.prefix == "[Global] "
+        assert rules.trackers == []
+
+    def test_hierarchical_format_with_trackers(self, tmp_path):
+        """Test hierarchical format with tracker-specific rules."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  prefix: "[Global] "
+
+trackers:
+  - name: "tracker-a"
+    match:
+      - "TrackerA*"
+    rules:
+      prefix: "[TrackerA] "
+      qualities_include:
+        - "Bluray-1080p"
+
+  - name: "public"
+    match:
+      - "*Public*"
+      - "1337x"
+    rules:
+      qualities_exclude:
+        - "CAM"
+        - "TS"
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        assert rules.global_rules.prefix == "[Global] "
+        assert len(rules.trackers) == 2
+
+        assert rules.trackers[0].name == "tracker-a"
+        assert rules.trackers[0].match == ["TrackerA*"]
+        assert rules.trackers[0].rules.prefix == "[TrackerA] "
+        assert rules.trackers[0].rules.qualities_include == ["Bluray-1080p"]
+
+        assert rules.trackers[1].name == "public"
+        assert rules.trackers[1].match == ["*Public*", "1337x"]
+        assert rules.trackers[1].rules.qualities_exclude == ["CAM", "TS"]
+
+    def test_get_rules_for_indexer_tracker_match(self, tmp_path):
+        """Test resolving rules for an indexer that matches a tracker."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  prefix: "[Global] "
+
+trackers:
+  - name: "my-tracker"
+    match:
+      - "MyPrivateTracker*"
+    rules:
+      prefix: "[Private] "
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        # Should match tracker
+        effective_rules, tracker_name = rules.get_rules_for_indexer("MyPrivateTracker (API)")
+        assert tracker_name == "my-tracker"
+        assert effective_rules.prefix == "[Private] "
+
+    def test_get_rules_for_indexer_fallback_to_global(self, tmp_path):
+        """Test falling back to global rules when no tracker matches."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  prefix: "[Global] "
+
+trackers:
+  - name: "tracker-a"
+    match:
+      - "TrackerA*"
+    rules:
+      prefix: "[TrackerA] "
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        # Should NOT match any tracker, use global
+        effective_rules, tracker_name = rules.get_rules_for_indexer("SomeOtherTracker")
+        assert tracker_name is None
+        assert effective_rules.prefix == "[Global] "
+
+    def test_get_rules_for_indexer_first_match_wins(self, tmp_path):
+        """Test that first matching tracker wins."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  prefix: "[Global] "
+
+trackers:
+  - name: "specific"
+    match:
+      - "TrackerA (API)"
+    rules:
+      prefix: "[Specific] "
+
+  - name: "wildcard"
+    match:
+      - "TrackerA*"
+    rules:
+      prefix: "[Wildcard] "
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        # Should match first (specific) tracker
+        effective_rules, tracker_name = rules.get_rules_for_indexer("TrackerA (API)")
+        assert tracker_name == "specific"
+        assert effective_rules.prefix == "[Specific] "
+
+        # This one should match second (wildcard) tracker
+        effective_rules, tracker_name = rules.get_rules_for_indexer("TrackerA-Prowlarr")
+        assert tracker_name == "wildcard"
+        assert effective_rules.prefix == "[Wildcard] "
+
+    def test_tracker_without_match_skipped(self, tmp_path):
+        """Test that trackers without match patterns are skipped."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  prefix: "[Global] "
+
+trackers:
+  - name: "no-match"
+    match: []
+    rules:
+      prefix: "[NoMatch] "
+
+  - name: "valid"
+    match:
+      - "TrackerA*"
+    rules:
+      prefix: "[Valid] "
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        # Should only have 1 tracker (the one without match was skipped)
+        assert len(rules.trackers) == 1
+        assert rules.trackers[0].name == "valid"
+
+    def test_complex_indexer_names_matching(self, tmp_path):
+        """Test matching complex real-world indexer names."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text(
+            """
+global:
+  prefix: "[Global] "
+
+trackers:
+  - name: "utopia"
+    match:
+      - "UTOPIA (API)-experimental"
+      - "UTOPIA*"
+    rules:
+      prefix: "[UTOPIA] "
+
+  - name: "toloka"
+    match:
+      - "Toloka.to"
+    rules:
+      prefix: "[Toloka] "
+
+  - name: "free-farm"
+    match:
+      - "Free Farm (自由农场)"
+    rules:
+      prefix: "[FreeFarm] "
+""",
+            encoding="utf-8",
+        )
+        rules = RenameRules.from_yaml(str(config_file))
+
+        # Test exact match
+        effective, name = rules.get_rules_for_indexer("UTOPIA (API)-experimental")
+        assert name == "utopia"
+        assert effective.prefix == "[UTOPIA] "
+
+        # Test wildcard match
+        effective, name = rules.get_rules_for_indexer("UTOPIA (Prowlarr)")
+        assert name == "utopia"
+
+        # Test with dots
+        effective, name = rules.get_rules_for_indexer("Toloka.to")
+        assert name == "toloka"
+        assert effective.prefix == "[Toloka] "
+
+        # Test Unicode
+        effective, name = rules.get_rules_for_indexer("Free Farm (自由农场)")
+        assert name == "free-farm"
+        assert effective.prefix == "[FreeFarm] "
+
+    def test_backward_compatibility_properties(self, tmp_path):
+        """Test backward compatibility properties on RenameRules."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  validate_custom_format_score: true
+  score_validation_policy: "warn"
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        # These properties should delegate to global_rules
+        assert rules.validate_custom_format_score is True
+        assert rules.score_validation_policy == "warn"
+
+    def test_has_trigger_filters_global_and_tracker(self, tmp_path):
+        """Test has_trigger_filters checks both global and tracker rules."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  indexers_exclude: []
+
+trackers:
+  - name: "tracker"
+    match:
+      - "TrackerA"
+    rules:
+      qualities_include:
+        - "1080p"
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        # Should return True because tracker has filters
+        assert rules.has_trigger_filters() is True
+
+    def test_config_not_found(self, tmp_path):
+        """Test handling when config file doesn't exist."""
+        rules = RenameRules.from_yaml(str(tmp_path / "nonexistent.yaml"))
+
+        assert rules.config_found is False
+        assert rules.trackers == []
+        # Global rules should be defaults
+        assert rules.global_rules.prefix == ""
 
 
 if __name__ == "__main__":

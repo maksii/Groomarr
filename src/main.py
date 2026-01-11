@@ -2,16 +2,19 @@
 
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import __version__
+from . import __version__, config
 from .arrapi import ArrClient
-from .config import reload_rules, rules, settings, setup_logging
+from .config import TrackerRules, reload_rules, settings, setup_logging
 from .models import (
     FileRenamePreview,
+    FindTorrentRequest,
+    FindTorrentResponse,
     ManualRenameRequest,
     ManualRenameResponse,
     PreviewRenameResponse,
@@ -91,8 +94,8 @@ async def lifespan(app: FastAPI):
         logger.info("Radarr API not configured (RADARR_URL/RADARR_API_KEY)")
 
     # Log score validation state
-    if rules.validate_custom_format_score:
-        logger.info(f"Score validation enabled (policy: {rules.score_validation_policy})")
+    if config.rules.validate_custom_format_score:
+        logger.info(f"Score validation enabled (policy: {config.rules.score_validation_policy})")
     else:
         logger.info("Score validation disabled")
 
@@ -215,11 +218,11 @@ def _log_config_state():
     """Log the current config file state and active rules."""
     from pathlib import Path
 
-    if not rules.config_found:
-        logger.warning(f"Config file not found: {rules.config_path}")
+    if not config.rules.config_found:
+        logger.warning(f"Config file not found: {config.rules.config_path}")
 
         # Show what's actually in the config directory to help debug
-        config_dir = Path(rules.config_path).parent
+        config_dir = Path(config.rules.config_path).parent
         if config_dir.exists():
             files = list(config_dir.iterdir())
             if files:
@@ -231,7 +234,7 @@ def _log_config_state():
             logger.warning(f"Directory {config_dir} does not exist")
 
         # Check if example file exists and hint the user
-        example_path = Path(rules.config_path + ".example")
+        example_path = Path(config.rules.config_path + ".example")
         if example_path.exists():
             logger.info(
                 f"Hint: Found {example_path.name} - copy it to rename_rules.yaml to get started"
@@ -240,23 +243,23 @@ def _log_config_state():
         logger.info("Using default settings (no filters, no rename rules)")
         return
 
-    if rules.config_error:
-        logger.error(f"Config file error: {rules.config_error}")
+    if config.rules.config_error:
+        logger.error(f"Config file error: {config.rules.config_error}")
         logger.info("Using default settings due to config error")
         return
 
-    logger.info(f"Config file loaded: {rules.config_path}")
+    logger.info(f"Config file loaded: {config.rules.config_path}")
 
     # Log trigger filters
-    if rules.has_trigger_filters():
-        filters = rules.get_active_filters_summary()
+    if config.rules.has_trigger_filters():
+        filters = config.rules.get_active_filters_summary()
         logger.info(f"Active trigger filters: {', '.join(filters)}")
     else:
         logger.info("Trigger filters: none (processing all webhooks)")
 
     # Log rename rules
-    if rules.has_rename_rules():
-        rename_rules = rules.get_active_rules_summary()
+    if config.rules.has_rename_rules():
+        rename_rules = config.rules.get_active_rules_summary()
         logger.info(f"Active rename rules: {', '.join(rename_rules)}")
     else:
         logger.info("Rename rules: none (titles will pass through unchanged)")
@@ -280,6 +283,7 @@ async def _validate_rename_score(
     current_name: str,
     new_name: str,
     hash_short: str,
+    effective_rules: TrackerRules,
 ) -> bool:
     """Validate rename using Arr API custom format score comparison.
 
@@ -291,12 +295,13 @@ async def _validate_rename_score(
         current_name: Current torrent name in qBittorrent
         new_name: Proposed new name after rename
         hash_short: Short torrent hash for logging
+        effective_rules: TrackerRules to use for validation settings
 
     Returns:
         True if rename should proceed, False if it should be skipped
     """
     # Check if validation is enabled
-    if not rules.validate_custom_format_score:
+    if not effective_rules.validate_custom_format_score:
         return True
 
     # Get the appropriate client
@@ -333,7 +338,7 @@ async def _validate_rename_score(
         return True
 
     # Score decreased - check policy
-    if rules.score_validation_policy == "warn":
+    if effective_rules.score_validation_policy == "warn":
         logger.warning(
             f"[{source}] Proceeding with rename despite score decrease: "
             f"{comparison.original_score} -> {comparison.new_score} "
@@ -355,6 +360,8 @@ async def process_rename_task(
     release_title: str,
     source: str,
     media_title: str,
+    effective_rules: TrackerRules,
+    tracker_name: str | None = None,
 ):
     """Background task to process rename operation.
 
@@ -363,9 +370,14 @@ async def process_rename_task(
         release_title: Original release title from webhook
         source: Source application (radarr/sonarr)
         media_title: Movie or series title for logging
+        effective_rules: TrackerRules to use (global or tracker-specific)
+        tracker_name: Name of matched tracker (None if using global rules)
     """
     hash_short = torrent_hash[:8]
-    logger.info(f"[{source}] Processing rename for '{media_title}' ({hash_short}...)")
+    rules_info = f"tracker '{tracker_name}'" if tracker_name else "global"
+    logger.info(
+        f"[{source}] Processing rename for '{media_title}' ({hash_short}...) using {rules_info}"
+    )
 
     # Wait for torrent to appear in qBittorrent
     torrent = await qbit_client.wait_for_torrent(
@@ -380,7 +392,7 @@ async def process_rename_task(
         return
 
     # Apply rename rules to get new name
-    new_name = apply_rename_rules(release_title, rules)
+    new_name = apply_rename_rules(release_title, effective_rules)
 
     if new_name == release_title:
         logger.info(f"[{source}] No rename rules applied, using original title")
@@ -389,7 +401,9 @@ async def process_rename_task(
 
     # Validate rename using Arr API (if enabled)
     # Compare current torrent name against proposed new name
-    should_rename = await _validate_rename_score(source, torrent.name, new_name, hash_short)
+    should_rename = await _validate_rename_score(
+        source, torrent.name, new_name, hash_short, effective_rules
+    )
     if not should_rename:
         return
 
@@ -449,7 +463,7 @@ async def health():
         "version": __version__,
         "qbittorrent": "connected" if qbit_connected else "disconnected",
         "dry_run": settings.dry_run,
-        "score_validation": rules.validate_custom_format_score,
+        "score_validation": config.rules.validate_custom_format_score,
     }
 
     # Add Sonarr status (only if configured)
@@ -467,6 +481,7 @@ async def health():
 async def reload_config():
     """Reload rename rules from file."""
     reload_rules()
+    _log_config_state()
     return {"status": "ok", "message": "Rules reloaded"}
 
 
@@ -687,6 +702,80 @@ async def preview_rename(request: ManualRenameRequest):
     return response
 
 
+@app.post("/find/torrent", response_model=FindTorrentResponse)
+async def find_torrent_by_id(request: FindTorrentRequest):
+    """Find a torrent by tracker ID from its comment.
+
+    Accepts either a full URL (e.g., https://domain/torrents/342558)
+    or just the ID number (e.g., 342558). Searches through all torrents
+    in qBittorrent and matches the ID in the comment property.
+
+    Args:
+        request: FindTorrentRequest with torrent_id (URL or number)
+
+    Returns:
+        FindTorrentResponse with torrent hash if found
+    """
+    torrent_id_input = request.torrent_id.strip()
+    logger.info(f"[find] Received request to find torrent with ID: {torrent_id_input}")
+
+    # Extract ID from URL or use as-is if it's just a number
+    torrent_id = None
+    if torrent_id_input.startswith("http"):
+        # Extract ID from URL pattern like https://domain/torrents/342558
+        match = re.search(r"/torrents/(\d+)", torrent_id_input)
+        if match:
+            torrent_id = match.group(1)
+        else:
+            logger.warning(f"[find] Could not extract ID from URL: {torrent_id_input}")
+            return FindTorrentResponse(
+                status="error",
+                torrent_id=torrent_id_input,
+                reason="Invalid URL format. Expected pattern: .../torrents/ID",
+            )
+    else:
+        # Assume it's just the ID number
+        if torrent_id_input.isdigit():
+            torrent_id = torrent_id_input
+        else:
+            logger.warning(f"[find] Invalid ID format (not a number): {torrent_id_input}")
+            return FindTorrentResponse(
+                status="error",
+                torrent_id=torrent_id_input,
+                reason="Invalid ID format. Expected a number or URL containing /torrents/ID",
+            )
+
+    if not torrent_id:
+        return FindTorrentResponse(
+            status="error",
+            torrent_id=torrent_id_input,
+            reason="Could not extract torrent ID from input",
+        )
+
+    # Search for torrent with matching ID in comment
+    torrent = qbit_client.find_torrent_by_comment_id(torrent_id)
+
+    if torrent:
+        torrent_hash = torrent.hash
+        hash_short = torrent_hash[:8]
+        logger.info(
+            f"[find] Found torrent with ID {torrent_id}: hash={hash_short}... name='{torrent.name}'"
+        )
+        return FindTorrentResponse(
+            status="found",
+            torrent_id=torrent_id,
+            torrent_hash=torrent_hash,
+            reason=f"Match found, hash: {hash_short}...",
+        )
+    else:
+        logger.info(f"[find] No torrent found with ID {torrent_id} in comments")
+        return FindTorrentResponse(
+            status="not_found",
+            torrent_id=torrent_id,
+            reason=f"No torrent found with ID {torrent_id} in comment property",
+        )
+
+
 @app.post("/webhook/radarr", response_model=WebhookResponse)
 async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
     """Handle Radarr webhook for Grab events.
@@ -748,8 +837,14 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
             torrent_hash=payload.downloadId,
         )
 
-    # Apply trigger filters
-    should_proc, skip_reason = should_process(payload, rules)
+    # Get indexer and resolve appropriate rules (tracker-specific or global)
+    indexer = payload.release.indexer or ""
+    effective_rules, tracker_name = config.rules.get_rules_for_indexer(indexer)
+    rules_info = f"tracker '{tracker_name}'" if tracker_name else "global"
+    logger.debug(f"[radarr] Using {rules_info} rules for indexer '{indexer}'")
+
+    # Apply trigger filters using the effective rules
+    should_proc, skip_reason = should_process(payload, effective_rules)
     if not should_proc:
         logger.info(f"[radarr] Skipping {hash_short}...: {skip_reason}")
         return WebhookResponse(
@@ -758,16 +853,18 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
             torrent_hash=payload.downloadId,
         )
 
-    # Queue background task
+    # Queue background task with effective rules
     background_tasks.add_task(
         process_rename_task,
         torrent_hash=payload.downloadId,
         release_title=payload.release.releaseTitle,
         source="radarr",
         media_title=movie_title,
+        effective_rules=effective_rules,
+        tracker_name=tracker_name,
     )
 
-    logger.info(f"[radarr] Queued rename for '{movie_title}' ({hash_short}...)")
+    logger.info(f"[radarr] Queued rename for '{movie_title}' ({hash_short}...) using {rules_info}")
     return WebhookResponse(
         status="queued",
         torrent_hash=payload.downloadId,
@@ -854,8 +951,14 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
             reason="no downloadId in payload",
         )
 
-    # Apply trigger filters
-    should_proc, skip_reason = should_process(payload, rules)
+    # Get indexer and resolve appropriate rules (tracker-specific or global)
+    indexer = payload.release.indexer or ""
+    effective_rules, tracker_name = config.rules.get_rules_for_indexer(indexer)
+    rules_info = f"tracker '{tracker_name}'" if tracker_name else "global"
+    logger.debug(f"[sonarr] Using {rules_info} rules for indexer '{indexer}'")
+
+    # Apply trigger filters using the effective rules
+    should_proc, skip_reason = should_process(payload, effective_rules)
     if not should_proc:
         logger.info(f"[sonarr] Skipping {hash_short}...: {skip_reason}")
         return WebhookResponse(
@@ -867,16 +970,21 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
     # Get release title
     release_title = payload.get_release_title()
 
-    # Queue background task
+    # Queue background task with effective rules
     background_tasks.add_task(
         process_rename_task,
         torrent_hash=download_id,
         release_title=release_title,
         source="sonarr",
         media_title=f"{series_title} {episode_info}",
+        effective_rules=effective_rules,
+        tracker_name=tracker_name,
     )
 
-    logger.info(f"[sonarr] Queued rename for '{series_title}' {episode_info} ({hash_short}...)")
+    logger.info(
+        f"[sonarr] Queued rename for '{series_title}' {episode_info} ({hash_short}...) "
+        f"using {rules_info}"
+    )
     return WebhookResponse(
         status="queued",
         torrent_hash=download_id,

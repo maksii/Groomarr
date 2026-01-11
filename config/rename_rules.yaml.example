@@ -1,99 +1,219 @@
 # ============================================
-# TRIGGER FILTERS - Control WHEN to rename
+# GROOMARR RENAME RULES CONFIGURATION
 # ============================================
-# All filters use regex patterns, case-insensitive matching
-
-# Indexer filtering (from release.indexer field in webhook)
-indexers_include: []           # Empty = allow all. If set, ONLY these indexers processed
-  # - "TrackerA.*"             # Only TrackerA indexers
-  # - "IndexerB"
-  # - "IndexerC"
-indexers_exclude: []           # Skip these indexers
-  # - ".*Public.*"             # Skip public indexers
-  # - "IndexerD"
-  # - "IndexerE"
-
-# Quality filtering (from release.quality field)
-qualities_include: []          # Empty = allow all
-  # - "Bluray-1080p"
-  # - "WEB.*1080p"             # Any WEB 1080p
-qualities_exclude: []          # Skip these qualities
-  # - "CAM"
-  # - "TS"
-  # - "HDTS"
-  # - ".*720p.*"               # Skip all 720p
-  # - ".*480p.*"
-
-# Custom format filtering (from webhook customFormats array)
-# Available in Radarr v4+ / Sonarr v4+
-customformats_require_any: []  # Rename ONLY if ANY of these custom formats present
-  # - "x265"
-  # - "HEVC"
-customformats_exclude: []      # Skip if ANY of these custom formats present
-  # - "DV"                     # Skip Dolby Vision
-  # - "3D"
-  # - "LargeFormat"            # Skip large formats (too large to rename quickly)
-
-# Custom format score threshold
-min_customformat_score: null   # null = disabled. e.g., 1000 = skip if score below 1000
-
-# Download client filtering (if you have multiple qBit instances)
-download_clients_include: []   # Empty = allow all
-  # - "movies_qBit"
-  # - "tv_qBit"
-download_clients_exclude: []
-  # - "seed_qBit"              # Don't rename on seeding-only client
-
-# Release group filtering
-release_groups_include: []     # Empty = allow all
-  # - "GroupA"
-  # - "GroupB"
-release_groups_exclude: []
-  # - "GroupC"                 # Known bad quality
-
-# ============================================
-# RENAME RULES - Control HOW to rename
-# ============================================
-
-# Add prefix/suffix to renamed titles
-prefix: ""                     # e.g., "[AUTO] "
-suffix: ""                     # e.g., " [Renamed]"
-
-# Patterns to REMOVE from release title (regex, applied in order)
-remove_patterns: []
-  # - "\\[.*?\\]"              # Remove [bracketed] tags
-  # - "\\(.*?\\)"              # Remove (parentheses)
-  # - "-\\w+$"                 # Remove release group at end
-
-# Pattern REPLACEMENTS (regex pattern -> replacement string)
-replace_patterns: {}
-  # "\\.": " "                 # Dots to spaces
-  # "_": " "                   # Underscores to spaces
-  # "\\s{2,}": " "             # Multiple spaces to single
-
-# Skip renaming if release title matches ANY of these (after other rules applied)
-skip_title_patterns: []
-  # - "^Sample"
-  # - "PROPER"                 # Don't rename PROPERs
-
-# ============================================
-# SCORE VALIDATION - Validate renames via Arr API
-# ============================================
-# Compares custom format scores before/after rename to ensure
-# the new name won't negatively impact Sonarr/Radarr matching.
 #
-# Requires environment variables:
-#   SONARR_URL=http://sonarr:8989
-#   SONARR_API_KEY=your-api-key
-#   RADARR_URL=http://radarr:7878
-#   RADARR_API_KEY=your-api-key
+# This file supports two formats:
+#
+# 1. LEGACY FORMAT (flat): All rules at root level - treated as global
+#    Backward compatible with older configs.
+#
+# 2. HIERARCHICAL FORMAT: 'global' section + 'trackers' list
+#    Allows different rules per tracker/indexer.
+#
+# When a webhook is received:
+#   1. Check if indexer matches any tracker in 'trackers' list (first match wins)
+#   2. If matched -> use that tracker's rules ONLY (global is NOT applied)
+#   3. If no match -> use global rules
+#
+# ============================================
 
-# Enable custom format score validation before rename
-# When enabled, Groomarr will call the Arr API to parse both the original
-# and new name, comparing their custom format scores.
-validate_custom_format_score: false
+# ============================================
+# GLOBAL RULES - Default fallback
+# ============================================
+# These rules apply when no tracker-specific config matches.
 
-# Policy when new name has lower custom format score than original:
-#   "block" - Skip rename entirely (safer, default)
-#   "warn"  - Log warning but proceed with rename anyway
-score_validation_policy: "block"
+global:
+  # ------------------------------------------
+  # TRIGGER FILTERS - Control WHEN to rename
+  # ------------------------------------------
+  # All filters use regex patterns, case-insensitive matching
+
+  # Indexer filtering (from release.indexer field in webhook)
+  # Note: For tracker-specific rules, use the 'trackers' section instead
+  indexers_include: []           # Empty = allow all. If set, ONLY these indexers processed
+    # - "TrackerA.*"             # Only TrackerA indexers
+  indexers_exclude: []           # Skip these indexers (applied when using global rules)
+    # - ".*Public.*"             # Skip public indexers
+    # - "BadTracker"
+
+  # Quality filtering (from release.quality field)
+  qualities_include: []          # Empty = allow all
+    # - "Bluray-1080p"
+    # - "WEB.*1080p"             # Any WEB 1080p
+  qualities_exclude: []          # Skip these qualities
+    # - "CAM"
+    # - "TS"
+    # - ".*720p.*"               # Skip all 720p
+
+  # Custom format filtering (from webhook customFormats array)
+  # Available in Radarr v4+ / Sonarr v4+
+  customformats_require_any: []  # Rename ONLY if ANY of these custom formats present
+    # - "x265"
+    # - "HEVC"
+  customformats_exclude: []      # Skip if ANY of these custom formats present
+    # - "DV"                     # Skip Dolby Vision
+    # - "3D"
+
+  # Custom format score threshold
+  min_customformat_score: null   # null = disabled. e.g., 1000 = skip if score below 1000
+
+  # Download client filtering (if you have multiple qBit instances)
+  download_clients_include: []   # Empty = allow all
+    # - "movies_qBit"
+  download_clients_exclude: []
+    # - "seed_qBit"              # Don't rename on seeding-only client
+
+  # Release group filtering
+  release_groups_include: []     # Empty = allow all
+    # - "GroupA"
+  release_groups_exclude: []
+    # - "BadGroup"               # Known bad quality
+
+  # ------------------------------------------
+  # RENAME RULES - Control HOW to rename
+  # ------------------------------------------
+
+  # Add prefix/suffix to renamed titles
+  prefix: ""                     # e.g., "[AUTO] "
+  suffix: ""                     # e.g., " [Renamed]"
+
+  # Patterns to REMOVE from release title (regex, applied in order)
+  remove_patterns: []
+    # - "\\[.*?\\]"              # Remove [bracketed] tags
+    # - "\\(.*?\\)"              # Remove (parentheses)
+
+  # Pattern REPLACEMENTS (regex pattern -> replacement string)
+  replace_patterns: {}
+    # "\\.": " "                 # Dots to spaces
+    # "_": " "                   # Underscores to spaces
+
+  # Skip renaming if release title matches ANY of these (after other rules applied)
+  skip_title_patterns: []
+    # - "^Sample"
+    # - "PROPER"                 # Don't rename PROPERs
+
+  # ------------------------------------------
+  # SCORE VALIDATION - Validate renames via Arr API
+  # ------------------------------------------
+  # Requires: SONARR_URL, SONARR_API_KEY, RADARR_URL, RADARR_API_KEY
+
+  validate_custom_format_score: false
+  score_validation_policy: "block"   # "block" or "warn"
+
+
+# ============================================
+# TRACKER-SPECIFIC RULES
+# ============================================
+# Each tracker config completely overrides global rules when matched.
+# Order matters - first matching tracker wins.
+#
+# Match patterns support:
+#   - Exact string: "TrackerName"           (case-insensitive)
+#   - Wildcard:     "Tracker*", "*Cinema*"  (shell-style glob)
+#   - Regex:        "/Tracker.*API/"        (wrapped in slashes)
+
+trackers:
+  # Example: Private tracker with high quality requirements
+  - name: "my-private-tracker"
+    match:
+      - "MyPrivateTracker (API)"     # Exact match
+      - "MyPrivateTracker*"          # Wildcard: matches variations
+    rules:
+      qualities_include:
+        - "Bluray.*"
+        - "Remux"
+      release_groups_include:
+        - "FraMeSToR"
+        - "SPARKS"
+        - "TayTO"
+      prefix: "[MPT] "
+      validate_custom_format_score: true
+      score_validation_policy: "warn"
+
+  # Example: Tracker with Unicode name
+  - name: "free-farm"
+    match:
+      - "Free Farm (自由农场)"       # Unicode support
+      - "Free Farm*"
+    rules:
+      qualities_exclude:
+        - "CAM"
+        - "TS"
+        - "HDTS"
+      min_customformat_score: 500
+
+  # Example: Multiple trackers with similar rules using regex
+  - name: "public-trackers"
+    match:
+      - "/.*public.*/i"              # Regex: any indexer containing "public"
+      - "1337x"
+      - "RARBG"
+      - "YTS*"
+    rules:
+      qualities_exclude:
+        - "CAM"
+        - "TS"
+        - "HDTS"
+        - ".*Screener.*"
+      release_groups_exclude:
+        - "YTS"
+        - "YIFY"
+      prefix: "[PUB] "
+
+  # Example: Anime tracker with specific handling
+  - name: "anime-tracker"
+    match:
+      - "Nyaa*"
+      - "AnimeBytes*"
+      - "BakaBT"
+    rules:
+      # No quality filters - accept all anime qualities
+      qualities_include: []
+      qualities_exclude: []
+      # Specific anime groups
+      release_groups_include:
+        - "SubsPlease"
+        - "Erai-raws"
+        - "Judas"
+      remove_patterns:
+        - "\\[.*?\\]"                # Remove [tags] common in anime releases
+      suffix: " [Anime]"
+
+  # Example: Tracker with complex name
+  - name: "upload-cx"
+    match:
+      - "upload.cx (API)"
+      - "upload.cx*"
+    rules:
+      min_customformat_score: 1000
+      validate_custom_format_score: true
+
+  # Example: Experimental tracker config
+  - name: "utopia"
+    match:
+      - "UTOPIA (API)-experimental"
+      - "UTOPIA*"
+    rules:
+      qualities_include:
+        - "WEB.*2160p"
+        - "Bluray.*2160p"
+      customformats_require_any:
+        - "HDR"
+        - "DV"
+      prefix: "[4K] "
+
+
+# ============================================
+# LEGACY FORMAT EXAMPLE
+# ============================================
+# If you prefer the simpler flat format (no tracker-specific rules),
+# just remove the 'global:' and 'trackers:' sections and put all
+# rules at the root level. Example:
+#
+# indexers_exclude:
+#   - "BadTracker"
+# qualities_exclude:
+#   - "CAM"
+# prefix: ""
+# suffix: ""
+# validate_custom_format_score: false
