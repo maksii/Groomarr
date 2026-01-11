@@ -833,16 +833,22 @@ class TestBackgroundTaskProcessing:
     async def test_process_rename_task_success(self, mock_qbit_client):
         """Test successful rename task processing."""
         from src import main
+        from src.config import TrackerRules
         from src.main import process_rename_task
 
         # Set the global client
         main.qbit_client = mock_qbit_client
+
+        # Create effective rules for the test
+        effective_rules = TrackerRules()
 
         await process_rename_task(
             torrent_hash="AF35BC0E03A9D8405779A69FC9A438F1BFE90C5F",
             release_title="Example Movie 2020 BluRay 1080p-Group",
             source="radarr",
             media_title="Example Movie",
+            effective_rules=effective_rules,
+            tracker_name=None,
         )
 
         # Verify qBit client methods were called
@@ -853,11 +859,15 @@ class TestBackgroundTaskProcessing:
     async def test_process_rename_task_torrent_not_found(self, mock_qbit_client):
         """Test rename task when torrent is not found."""
         from src import main
+        from src.config import TrackerRules
         from src.main import process_rename_task
 
         # Make wait_for_torrent return None
         mock_qbit_client.wait_for_torrent = AsyncMock(return_value=None)
         main.qbit_client = mock_qbit_client
+
+        # Create effective rules for the test
+        effective_rules = TrackerRules()
 
         # Should complete without error
         await process_rename_task(
@@ -865,6 +875,8 @@ class TestBackgroundTaskProcessing:
             release_title="Missing Torrent",
             source="radarr",
             media_title="Missing Movie",
+            effective_rules=effective_rules,
+            tracker_name=None,
         )
 
         # Rename should not be called
@@ -1410,14 +1422,14 @@ class TestTriggerFilters:
 
     def test_indexer_include_filter(self, radarr_payload):
         """Test indexer include filter."""
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.models import RadarrWebhook
         from src.rename import should_process
 
         payload = RadarrWebhook(**radarr_payload)
 
         # Should pass - indexer matches
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.indexers_include = ["TrackerA.*"]
         should_proc, reason = should_process(payload, rules)
         assert should_proc is True
@@ -1430,14 +1442,14 @@ class TestTriggerFilters:
 
     def test_indexer_exclude_filter(self, radarr_payload):
         """Test indexer exclude filter."""
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.models import RadarrWebhook
         from src.rename import should_process
 
         payload = RadarrWebhook(**radarr_payload)
 
         # Should fail - indexer in exclude list
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.indexers_exclude = ["TrackerA.*"]
         should_proc, reason = should_process(payload, rules)
         assert should_proc is False
@@ -1449,12 +1461,12 @@ class TestTriggerFilters:
         This test verifies the use case where you want to rename torrents
         ONLY from a specific private tracker and skip all others.
         """
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.models import RadarrWebhook, SonarrWebhook
         from src.rename import should_process
 
         # Configure rules to only process from "PrivateTracker"
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.indexers_include = ["PrivateTracker.*"]
 
         # Test with Radarr - TrackerA should NOT be processed
@@ -1482,12 +1494,12 @@ class TestTriggerFilters:
 
     def test_multiple_specific_trackers(self, radarr_payload):
         """Test processing from multiple specific trackers."""
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.models import RadarrWebhook
         from src.rename import should_process
 
         # Configure rules to only process from two specific trackers
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.indexers_include = ["TrackerA.*", "TrackerB.*"]
 
         # TrackerA should be processed
@@ -1509,12 +1521,12 @@ class TestTriggerFilters:
 
     def test_exclude_specific_tracker(self, radarr_payload):
         """Test excluding a specific tracker while allowing all others."""
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.models import RadarrWebhook
         from src.rename import should_process
 
         # Configure rules to exclude only PublicTracker
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.indexers_exclude = ["PublicTracker.*"]
 
         # TrackerA should be processed (not in exclude list)
@@ -1531,42 +1543,42 @@ class TestTriggerFilters:
 
     def test_quality_filter(self, radarr_payload):
         """Test quality filter."""
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.models import RadarrWebhook
         from src.rename import should_process
 
         payload = RadarrWebhook(**radarr_payload)
 
         # Should pass - quality matches
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.qualities_include = [".*1080p.*"]
         should_proc, reason = should_process(payload, rules)
         assert should_proc is True
 
     def test_download_client_filter(self, radarr_payload):
         """Test download client filter."""
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.models import RadarrWebhook
         from src.rename import should_process
 
         payload = RadarrWebhook(**radarr_payload)
 
         # Should fail - client in exclude list
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.download_clients_exclude = ["movies_qBit"]
         should_proc, reason = should_process(payload, rules)
         assert should_proc is False
 
     def test_custom_format_score_filter(self, radarr_payload):
         """Test custom format score filter."""
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.models import RadarrWebhook
         from src.rename import should_process
 
         payload = RadarrWebhook(**radarr_payload)
 
         # Should pass - score is high enough
-        rules = RenameRules()
+        rules = TrackerRules()
         rules.min_customformat_score = 1000
         should_proc, reason = should_process(payload, rules)
         assert should_proc is True
@@ -1730,34 +1742,34 @@ class TestScoreValidation:
     @pytest.mark.asyncio
     async def test_validate_rename_score_disabled(self, mock_qbit_client, mock_torrent):
         """When score validation is disabled, rename should proceed without API call."""
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.main import _validate_rename_score
 
-        # Create rules with validation disabled
-        rules = RenameRules()
-        rules.validate_custom_format_score = False
+        # Create effective rules with validation disabled
+        effective_rules = TrackerRules()
+        effective_rules.validate_custom_format_score = False
 
-        with patch("src.main.rules", rules):
-            result = await _validate_rename_score(
-                source="radarr",
-                current_name="Current.Torrent.Name",
-                new_name="New.Title",
-                hash_short="ABCD1234",
-            )
+        result = await _validate_rename_score(
+            source="radarr",
+            current_name="Current.Torrent.Name",
+            new_name="New.Title",
+            hash_short="ABCD1234",
+            effective_rules=effective_rules,
+        )
 
-            assert result is True  # Should proceed without validation
+        assert result is True  # Should proceed without validation
 
     @pytest.mark.asyncio
     async def test_validate_rename_score_enabled_safe(self, mock_arr_client):
         """When score validation passes, rename should proceed."""
         from src.arrapi import ParseResult, ScoreComparison
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.main import _validate_rename_score
 
-        # Create rules with validation enabled
-        rules = RenameRules()
-        rules.validate_custom_format_score = True
-        rules.score_validation_policy = "block"
+        # Create effective rules with validation enabled
+        effective_rules = TrackerRules()
+        effective_rules.validate_custom_format_score = True
+        effective_rules.score_validation_policy = "block"
 
         # Create a safe comparison (scores equal)
         comparison = ScoreComparison(
@@ -1771,7 +1783,6 @@ class TestScoreValidation:
         mock_arr_client.validate_rename = AsyncMock(return_value=comparison)
 
         with (
-            patch("src.main.rules", rules),
             patch("src.main.radarr_client", mock_arr_client),
             patch("src.main.settings") as mock_settings,
         ):
@@ -1782,6 +1793,7 @@ class TestScoreValidation:
                 current_name="Current.Torrent.Name",
                 new_name="New.Title",
                 hash_short="ABCD1234",
+                effective_rules=effective_rules,
             )
 
             assert result is True
@@ -1790,12 +1802,12 @@ class TestScoreValidation:
     async def test_validate_rename_score_block_on_decrease(self, mock_arr_client):
         """When score decreases with block policy, rename should be skipped."""
         from src.arrapi import ParseResult, ScoreComparison
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.main import _validate_rename_score
 
-        rules = RenameRules()
-        rules.validate_custom_format_score = True
-        rules.score_validation_policy = "block"
+        effective_rules = TrackerRules()
+        effective_rules.validate_custom_format_score = True
+        effective_rules.score_validation_policy = "block"
 
         # Create an unsafe comparison (score decreased)
         comparison = ScoreComparison(
@@ -1809,7 +1821,6 @@ class TestScoreValidation:
         mock_arr_client.validate_rename = AsyncMock(return_value=comparison)
 
         with (
-            patch("src.main.rules", rules),
             patch("src.main.radarr_client", mock_arr_client),
             patch("src.main.settings") as mock_settings,
         ):
@@ -1820,6 +1831,7 @@ class TestScoreValidation:
                 current_name="Current.Torrent.Name",
                 new_name="New.Title",
                 hash_short="ABCD1234",
+                effective_rules=effective_rules,
             )
 
             assert result is False  # Should block rename
@@ -1828,12 +1840,12 @@ class TestScoreValidation:
     async def test_validate_rename_score_warn_on_decrease(self, mock_arr_client):
         """When score decreases with warn policy, rename should proceed with warning."""
         from src.arrapi import ParseResult, ScoreComparison
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.main import _validate_rename_score
 
-        rules = RenameRules()
-        rules.validate_custom_format_score = True
-        rules.score_validation_policy = "warn"
+        effective_rules = TrackerRules()
+        effective_rules.validate_custom_format_score = True
+        effective_rules.score_validation_policy = "warn"
 
         # Create an unsafe comparison (score decreased)
         comparison = ScoreComparison(
@@ -1847,7 +1859,6 @@ class TestScoreValidation:
         mock_arr_client.validate_rename = AsyncMock(return_value=comparison)
 
         with (
-            patch("src.main.rules", rules),
             patch("src.main.radarr_client", mock_arr_client),
             patch("src.main.settings") as mock_settings,
         ):
@@ -1858,6 +1869,7 @@ class TestScoreValidation:
                 current_name="Current.Torrent.Name",
                 new_name="New.Title",
                 hash_short="ABCD1234",
+                effective_rules=effective_rules,
             )
 
             assert result is True  # Should proceed despite score decrease
@@ -1865,19 +1877,18 @@ class TestScoreValidation:
     @pytest.mark.asyncio
     async def test_validate_rename_score_api_unreachable(self):
         """When Arr API is unreachable, rename should be skipped."""
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.main import _validate_rename_score
 
-        rules = RenameRules()
-        rules.validate_custom_format_score = True
-        rules.score_validation_policy = "block"
+        effective_rules = TrackerRules()
+        effective_rules.validate_custom_format_score = True
+        effective_rules.score_validation_policy = "block"
 
         # Mock client that returns None (API error)
         mock_arr_client = MagicMock()
         mock_arr_client.validate_rename = AsyncMock(return_value=None)
 
         with (
-            patch("src.main.rules", rules),
             patch("src.main.radarr_client", mock_arr_client),
             patch("src.main.settings") as mock_settings,
         ):
@@ -1888,6 +1899,7 @@ class TestScoreValidation:
                 current_name="Current.Torrent.Name",
                 new_name="New.Title",
                 hash_short="ABCD1234",
+                effective_rules=effective_rules,
             )
 
             assert result is False  # Should skip rename on API error
@@ -1895,15 +1907,14 @@ class TestScoreValidation:
     @pytest.mark.asyncio
     async def test_validate_rename_score_no_client_configured(self):
         """When Arr client is not configured, rename should be skipped."""
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.main import _validate_rename_score
 
-        rules = RenameRules()
-        rules.validate_custom_format_score = True
-        rules.score_validation_policy = "block"
+        effective_rules = TrackerRules()
+        effective_rules.validate_custom_format_score = True
+        effective_rules.score_validation_policy = "block"
 
         with (
-            patch("src.main.rules", rules),
             patch("src.main.radarr_client", None),
             patch("src.main.settings") as mock_settings,
         ):
@@ -1914,6 +1925,7 @@ class TestScoreValidation:
                 current_name="Current.Torrent.Name",
                 new_name="New.Title",
                 hash_short="ABCD1234",
+                effective_rules=effective_rules,
             )
 
             assert result is False  # Should skip when client not configured
@@ -1922,12 +1934,12 @@ class TestScoreValidation:
     async def test_validate_rename_score_sonarr_source(self, mock_arr_client):
         """Score validation should use Sonarr client for Sonarr webhooks."""
         from src.arrapi import ParseResult, ScoreComparison
-        from src.config import RenameRules
+        from src.config import TrackerRules
         from src.main import _validate_rename_score
 
-        rules = RenameRules()
-        rules.validate_custom_format_score = True
-        rules.score_validation_policy = "block"
+        effective_rules = TrackerRules()
+        effective_rules.validate_custom_format_score = True
+        effective_rules.score_validation_policy = "block"
 
         comparison = ScoreComparison(
             original_score=9370,
@@ -1940,7 +1952,6 @@ class TestScoreValidation:
         mock_arr_client.validate_rename = AsyncMock(return_value=comparison)
 
         with (
-            patch("src.main.rules", rules),
             patch("src.main.sonarr_client", mock_arr_client),
             patch("src.main.radarr_client", None),
             patch("src.main.settings") as mock_settings,
@@ -1952,6 +1963,7 @@ class TestScoreValidation:
                 current_name="Current.Series.S01E01.Name",
                 new_name="Series S01E01 Title",
                 hash_short="EFGH5678",
+                effective_rules=effective_rules,
             )
 
             assert result is True
@@ -1968,8 +1980,9 @@ class TestHealthEndpointWithArrClients:
         # when Arr clients are configured
         from src.config import RenameRules
 
+        # Create rules with score validation enabled
         rules = RenameRules()
-        rules.validate_custom_format_score = True
+        rules.global_rules.validate_custom_format_score = True
 
         mock_sonarr = MagicMock()
         mock_sonarr.check_connection = MagicMock(return_value=True)
@@ -2023,16 +2036,16 @@ class TestConfigScoreValidation:
     """Test score validation configuration loading."""
 
     def test_rules_default_values(self):
-        """RenameRules should have correct default values for score validation."""
-        from src.config import RenameRules
+        """TrackerRules should have correct default values for score validation."""
+        from src.config import TrackerRules
 
-        rules = RenameRules()
+        rules = TrackerRules()
 
         assert rules.validate_custom_format_score is False
         assert rules.score_validation_policy == "block"
 
     def test_rules_from_yaml_with_score_validation(self, tmp_path):
-        """RenameRules should load score validation settings from YAML."""
+        """RenameRules should load score validation settings from YAML (legacy format)."""
         from src.config import RenameRules
 
         config_file = tmp_path / "test_rules.yaml"
@@ -2043,6 +2056,7 @@ score_validation_policy: "warn"
 
         rules = RenameRules.from_yaml(str(config_file))
 
+        # Properties delegate to global_rules for backward compatibility
         assert rules.validate_custom_format_score is True
         assert rules.score_validation_policy == "warn"
 

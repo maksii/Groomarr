@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from .config import RenameRules
+from .config import TrackerRules
 from .models import RadarrWebhook, SonarrWebhook
 from .qbittorrent import QBitClient
 
@@ -63,12 +63,12 @@ def matches_any(value: str, patterns: list[str]) -> bool:
     return any(re.search(p, value, re.IGNORECASE) for p in patterns)
 
 
-def should_process(payload: RadarrWebhook | SonarrWebhook, rules: RenameRules) -> tuple[bool, str]:
+def should_process(payload: RadarrWebhook | SonarrWebhook, rules: TrackerRules) -> tuple[bool, str]:
     """Check if webhook should be processed based on trigger filters.
 
     Args:
         payload: Webhook payload from Sonarr or Radarr
-        rules: Rename rules with filters
+        rules: TrackerRules with filters (can be global or tracker-specific)
 
     Returns:
         Tuple of (should_process, skip_reason)
@@ -197,12 +197,12 @@ def sanitize_filename(name: str) -> str:
     return name
 
 
-def apply_rename_rules(original_name: str, rules: RenameRules) -> str:
+def apply_rename_rules(original_name: str, rules: TrackerRules) -> str:
     """Apply rename rules to transform the name.
 
     Args:
         original_name: Original release title
-        rules: Rename rules to apply
+        rules: TrackerRules with rename rules (can be global or tracker-specific)
 
     Returns:
         Transformed name

@@ -91,77 +91,122 @@ docker-compose up -d
 
 ### Rename Rules File
 
-Create `config/rename_rules.yaml` to customize behavior:
+Create `config/rename_rules.yaml` to customize behavior. The configuration supports two formats:
+
+1. **Legacy flat format**: All rules at root level (backward compatible)
+2. **Hierarchical format**: `global` section + `trackers` list for per-indexer rules
+
+#### Rule Resolution
+
+When a webhook is received:
+1. Check if the indexer matches any tracker in the `trackers` list (first match wins)
+2. If matched → use that tracker's rules **exclusively** (global rules are NOT applied)
+3. If no match → use global rules
+
+#### Hierarchical Format (Recommended)
 
 ```yaml
-# ===========================================
-# TRIGGER FILTERS - Control WHEN to rename
-# ===========================================
+# Global rules - used when no tracker-specific config matches
+global:
+  # Trigger filters
+  indexers_exclude:
+    - ".*Public.*"
+  qualities_exclude:
+    - "CAM"
+    - "TS"
+  
+  # Rename rules
+  prefix: ""
+  suffix: ""
+  
+  # Score validation
+  validate_custom_format_score: false
+  score_validation_policy: "block"
 
-# Only process these indexers (regex, case-insensitive)
+# Tracker-specific rules - first matching tracker wins
+trackers:
+  - name: "my-private-tracker"
+    match:
+      - "MyPrivateTracker (API)"   # Exact match (case-insensitive)
+      - "MyPrivateTracker*"        # Wildcard match
+    rules:
+      qualities_include:
+        - "Bluray.*"
+        - "Remux"
+      prefix: "[MPT] "
+      validate_custom_format_score: true
+
+  - name: "anime-tracker"
+    match:
+      - "Nyaa*"
+      - "AnimeBytes*"
+      - "/.*anime.*/i"             # Regex match (wrapped in slashes)
+    rules:
+      release_groups_include:
+        - "SubsPlease"
+        - "Erai-raws"
+      remove_patterns:
+        - "\\[.*?\\]"              # Remove [tags] common in anime
+      suffix: " [Anime]"
+```
+
+#### Match Pattern Types
+
+| Pattern | Example | Matches |
+|---------|---------|---------|
+| Exact string | `"TrackerName"` | Case-insensitive exact match |
+| Wildcard | `"Tracker*"`, `"*Cinema*"` | Shell-style glob (`*` = any chars, `?` = single char) |
+| Regex | `"/Tracker.*API/"` | Regular expression (wrapped in slashes) |
+
+#### Legacy Flat Format
+
+For simpler setups without tracker-specific rules:
+
+```yaml
+# All rules at root level (no 'global:' or 'trackers:' sections)
 indexers_include:
   - "TrackerA.*"
   - "IndexerB"
 
-# Skip these indexers
 indexers_exclude:
   - ".*Public.*"
 
-# Only process these qualities
-qualities_include: []  # Empty = all
-
-# Skip these qualities
 qualities_exclude:
   - "CAM"
   - "TS"
-  - ".*480p.*"
 
-# Require any of these custom formats (Radarr/Sonarr v4+)
-customformats_require_any: []
-
-# Skip if any of these custom formats present
-customformats_exclude:
-  - "3D"
-
-# Minimum custom format score
-min_customformat_score: null  # e.g., 1000
-
-# Download client filtering
-download_clients_include: []
-download_clients_exclude: []
-
-# Release group filtering
-release_groups_include: []
-release_groups_exclude:
-  - "LowQualityGroup"
-
-# ===========================================
-# RENAME RULES - Control HOW to rename
-# ===========================================
-
-# Add prefix/suffix
 prefix: ""
 suffix: ""
 
-# Patterns to remove (regex)
-remove_patterns:
-  - "-\\w+$"           # Remove release group at end
-
-# Pattern replacements
-replace_patterns:
-  "\\.": " "           # Dots to spaces
-  "\\s+": " "          # Multiple spaces to single
-
-# Skip renaming if title matches these patterns
-skip_title_patterns:
-  - "PROPER"
-
-# ===========================================
-# SCORE VALIDATION - Validate renames via Arr API
-# ===========================================
 validate_custom_format_score: false
-score_validation_policy: "block"  # "block" or "warn"
+score_validation_policy: "block"
 ```
+
+#### Available Filter Options
+
+| Filter | Description |
+|--------|-------------|
+| `indexers_include` | Only process these indexers (regex) |
+| `indexers_exclude` | Skip these indexers |
+| `qualities_include` | Only process these qualities |
+| `qualities_exclude` | Skip these qualities |
+| `customformats_require_any` | Require any of these custom formats |
+| `customformats_exclude` | Skip if any of these present |
+| `min_customformat_score` | Minimum score threshold (null = disabled) |
+| `download_clients_include` | Only process from these clients |
+| `download_clients_exclude` | Skip these download clients |
+| `release_groups_include` | Only process these release groups |
+| `release_groups_exclude` | Skip these release groups |
+
+#### Available Rename Rules
+
+| Rule | Description |
+|------|-------------|
+| `prefix` | Add prefix to renamed titles |
+| `suffix` | Add suffix to renamed titles |
+| `remove_patterns` | Regex patterns to remove from title |
+| `replace_patterns` | Pattern → replacement mapping |
+| `skip_title_patterns` | Skip renaming if title matches these |
 
 ### Score Validation
 

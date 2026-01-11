@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from . import __version__
 from .arrapi import ArrClient
-from .config import reload_rules, rules, settings, setup_logging
+from .config import TrackerRules, reload_rules, rules, settings, setup_logging
 from .models import (
     FileRenamePreview,
     ManualRenameRequest,
@@ -280,6 +280,7 @@ async def _validate_rename_score(
     current_name: str,
     new_name: str,
     hash_short: str,
+    effective_rules: TrackerRules,
 ) -> bool:
     """Validate rename using Arr API custom format score comparison.
 
@@ -291,12 +292,13 @@ async def _validate_rename_score(
         current_name: Current torrent name in qBittorrent
         new_name: Proposed new name after rename
         hash_short: Short torrent hash for logging
+        effective_rules: TrackerRules to use for validation settings
 
     Returns:
         True if rename should proceed, False if it should be skipped
     """
     # Check if validation is enabled
-    if not rules.validate_custom_format_score:
+    if not effective_rules.validate_custom_format_score:
         return True
 
     # Get the appropriate client
@@ -333,7 +335,7 @@ async def _validate_rename_score(
         return True
 
     # Score decreased - check policy
-    if rules.score_validation_policy == "warn":
+    if effective_rules.score_validation_policy == "warn":
         logger.warning(
             f"[{source}] Proceeding with rename despite score decrease: "
             f"{comparison.original_score} -> {comparison.new_score} "
@@ -355,6 +357,8 @@ async def process_rename_task(
     release_title: str,
     source: str,
     media_title: str,
+    effective_rules: TrackerRules,
+    tracker_name: str | None = None,
 ):
     """Background task to process rename operation.
 
@@ -363,9 +367,14 @@ async def process_rename_task(
         release_title: Original release title from webhook
         source: Source application (radarr/sonarr)
         media_title: Movie or series title for logging
+        effective_rules: TrackerRules to use (global or tracker-specific)
+        tracker_name: Name of matched tracker (None if using global rules)
     """
     hash_short = torrent_hash[:8]
-    logger.info(f"[{source}] Processing rename for '{media_title}' ({hash_short}...)")
+    rules_info = f"tracker '{tracker_name}'" if tracker_name else "global"
+    logger.info(
+        f"[{source}] Processing rename for '{media_title}' ({hash_short}...) using {rules_info}"
+    )
 
     # Wait for torrent to appear in qBittorrent
     torrent = await qbit_client.wait_for_torrent(
@@ -380,7 +389,7 @@ async def process_rename_task(
         return
 
     # Apply rename rules to get new name
-    new_name = apply_rename_rules(release_title, rules)
+    new_name = apply_rename_rules(release_title, effective_rules)
 
     if new_name == release_title:
         logger.info(f"[{source}] No rename rules applied, using original title")
@@ -389,7 +398,9 @@ async def process_rename_task(
 
     # Validate rename using Arr API (if enabled)
     # Compare current torrent name against proposed new name
-    should_rename = await _validate_rename_score(source, torrent.name, new_name, hash_short)
+    should_rename = await _validate_rename_score(
+        source, torrent.name, new_name, hash_short, effective_rules
+    )
     if not should_rename:
         return
 
@@ -748,8 +759,14 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
             torrent_hash=payload.downloadId,
         )
 
-    # Apply trigger filters
-    should_proc, skip_reason = should_process(payload, rules)
+    # Get indexer and resolve appropriate rules (tracker-specific or global)
+    indexer = payload.release.indexer or ""
+    effective_rules, tracker_name = rules.get_rules_for_indexer(indexer)
+    rules_info = f"tracker '{tracker_name}'" if tracker_name else "global"
+    logger.debug(f"[radarr] Using {rules_info} rules for indexer '{indexer}'")
+
+    # Apply trigger filters using the effective rules
+    should_proc, skip_reason = should_process(payload, effective_rules)
     if not should_proc:
         logger.info(f"[radarr] Skipping {hash_short}...: {skip_reason}")
         return WebhookResponse(
@@ -758,16 +775,18 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
             torrent_hash=payload.downloadId,
         )
 
-    # Queue background task
+    # Queue background task with effective rules
     background_tasks.add_task(
         process_rename_task,
         torrent_hash=payload.downloadId,
         release_title=payload.release.releaseTitle,
         source="radarr",
         media_title=movie_title,
+        effective_rules=effective_rules,
+        tracker_name=tracker_name,
     )
 
-    logger.info(f"[radarr] Queued rename for '{movie_title}' ({hash_short}...)")
+    logger.info(f"[radarr] Queued rename for '{movie_title}' ({hash_short}...) using {rules_info}")
     return WebhookResponse(
         status="queued",
         torrent_hash=payload.downloadId,
@@ -854,8 +873,14 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
             reason="no downloadId in payload",
         )
 
-    # Apply trigger filters
-    should_proc, skip_reason = should_process(payload, rules)
+    # Get indexer and resolve appropriate rules (tracker-specific or global)
+    indexer = payload.release.indexer or ""
+    effective_rules, tracker_name = rules.get_rules_for_indexer(indexer)
+    rules_info = f"tracker '{tracker_name}'" if tracker_name else "global"
+    logger.debug(f"[sonarr] Using {rules_info} rules for indexer '{indexer}'")
+
+    # Apply trigger filters using the effective rules
+    should_proc, skip_reason = should_process(payload, effective_rules)
     if not should_proc:
         logger.info(f"[sonarr] Skipping {hash_short}...: {skip_reason}")
         return WebhookResponse(
@@ -867,16 +892,21 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
     # Get release title
     release_title = payload.get_release_title()
 
-    # Queue background task
+    # Queue background task with effective rules
     background_tasks.add_task(
         process_rename_task,
         torrent_hash=download_id,
         release_title=release_title,
         source="sonarr",
         media_title=f"{series_title} {episode_info}",
+        effective_rules=effective_rules,
+        tracker_name=tracker_name,
     )
 
-    logger.info(f"[sonarr] Queued rename for '{series_title}' {episode_info} ({hash_short}...)")
+    logger.info(
+        f"[sonarr] Queued rename for '{series_title}' {episode_info} ({hash_short}...) "
+        f"using {rules_info}"
+    )
     return WebhookResponse(
         status="queued",
         torrent_hash=download_id,
