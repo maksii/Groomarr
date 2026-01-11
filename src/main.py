@@ -8,9 +8,9 @@ from contextlib import asynccontextmanager
 from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import __version__
+from . import __version__, config
 from .arrapi import ArrClient
-from .config import TrackerRules, reload_rules, rules, settings, setup_logging
+from .config import TrackerRules, reload_rules, settings, setup_logging
 from .models import (
     FileRenamePreview,
     FindTorrentRequest,
@@ -94,8 +94,8 @@ async def lifespan(app: FastAPI):
         logger.info("Radarr API not configured (RADARR_URL/RADARR_API_KEY)")
 
     # Log score validation state
-    if rules.validate_custom_format_score:
-        logger.info(f"Score validation enabled (policy: {rules.score_validation_policy})")
+    if config.rules.validate_custom_format_score:
+        logger.info(f"Score validation enabled (policy: {config.rules.score_validation_policy})")
     else:
         logger.info("Score validation disabled")
 
@@ -218,11 +218,11 @@ def _log_config_state():
     """Log the current config file state and active rules."""
     from pathlib import Path
 
-    if not rules.config_found:
-        logger.warning(f"Config file not found: {rules.config_path}")
+    if not config.rules.config_found:
+        logger.warning(f"Config file not found: {config.rules.config_path}")
 
         # Show what's actually in the config directory to help debug
-        config_dir = Path(rules.config_path).parent
+        config_dir = Path(config.rules.config_path).parent
         if config_dir.exists():
             files = list(config_dir.iterdir())
             if files:
@@ -234,7 +234,7 @@ def _log_config_state():
             logger.warning(f"Directory {config_dir} does not exist")
 
         # Check if example file exists and hint the user
-        example_path = Path(rules.config_path + ".example")
+        example_path = Path(config.rules.config_path + ".example")
         if example_path.exists():
             logger.info(
                 f"Hint: Found {example_path.name} - copy it to rename_rules.yaml to get started"
@@ -243,23 +243,23 @@ def _log_config_state():
         logger.info("Using default settings (no filters, no rename rules)")
         return
 
-    if rules.config_error:
-        logger.error(f"Config file error: {rules.config_error}")
+    if config.rules.config_error:
+        logger.error(f"Config file error: {config.rules.config_error}")
         logger.info("Using default settings due to config error")
         return
 
-    logger.info(f"Config file loaded: {rules.config_path}")
+    logger.info(f"Config file loaded: {config.rules.config_path}")
 
     # Log trigger filters
-    if rules.has_trigger_filters():
-        filters = rules.get_active_filters_summary()
+    if config.rules.has_trigger_filters():
+        filters = config.rules.get_active_filters_summary()
         logger.info(f"Active trigger filters: {', '.join(filters)}")
     else:
         logger.info("Trigger filters: none (processing all webhooks)")
 
     # Log rename rules
-    if rules.has_rename_rules():
-        rename_rules = rules.get_active_rules_summary()
+    if config.rules.has_rename_rules():
+        rename_rules = config.rules.get_active_rules_summary()
         logger.info(f"Active rename rules: {', '.join(rename_rules)}")
     else:
         logger.info("Rename rules: none (titles will pass through unchanged)")
@@ -463,7 +463,7 @@ async def health():
         "version": __version__,
         "qbittorrent": "connected" if qbit_connected else "disconnected",
         "dry_run": settings.dry_run,
-        "score_validation": rules.validate_custom_format_score,
+        "score_validation": config.rules.validate_custom_format_score,
     }
 
     # Add Sonarr status (only if configured)
@@ -481,6 +481,7 @@ async def health():
 async def reload_config():
     """Reload rename rules from file."""
     reload_rules()
+    _log_config_state()
     return {"status": "ok", "message": "Rules reloaded"}
 
 
@@ -838,7 +839,7 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
 
     # Get indexer and resolve appropriate rules (tracker-specific or global)
     indexer = payload.release.indexer or ""
-    effective_rules, tracker_name = rules.get_rules_for_indexer(indexer)
+    effective_rules, tracker_name = config.rules.get_rules_for_indexer(indexer)
     rules_info = f"tracker '{tracker_name}'" if tracker_name else "global"
     logger.debug(f"[radarr] Using {rules_info} rules for indexer '{indexer}'")
 
@@ -952,7 +953,7 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
 
     # Get indexer and resolve appropriate rules (tracker-specific or global)
     indexer = payload.release.indexer or ""
-    effective_rules, tracker_name = rules.get_rules_for_indexer(indexer)
+    effective_rules, tracker_name = config.rules.get_rules_for_indexer(indexer)
     rules_info = f"tracker '{tracker_name}'" if tracker_name else "global"
     logger.debug(f"[sonarr] Using {rules_info} rules for indexer '{indexer}'")
 

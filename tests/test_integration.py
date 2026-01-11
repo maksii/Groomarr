@@ -2281,7 +2281,7 @@ class TestHealthEndpointWithArrClients:
             main.radarr_client = mock_radarr
 
             # Patch rules to enable score validation
-            with patch.object(main, "rules", rules):
+            with patch.object(config, "rules", rules):
                 transport = ASGITransport(app=main.app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.get("/health")
