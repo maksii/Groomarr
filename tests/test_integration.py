@@ -95,6 +95,10 @@ def mock_qbit_client(mock_torrent, mock_torrent_files):
     current_torrent_name = {"name": "Original.Torrent.Name-Group"}
     current_files = list(mock_torrent_files)  # Copy
 
+    # Default list of torrents for find_torrent_by_comment_id tests
+    # Can be overridden in specific tests
+    mock_torrents_list = []
+
     def get_torrent_info(torrent_hash):
         torrent = MagicMock()
         torrent.name = current_torrent_name["name"]
@@ -126,11 +130,30 @@ def mock_qbit_client(mock_torrent, mock_torrent_files):
                 current_files[i] = {"name": new_path + f["name"][len(old_path) :]}
         return True
 
+    def get_all_torrents():
+        return mock_torrents_list
+
+    def find_torrent_by_comment_id(torrent_id):
+        import re
+
+        for torrent in mock_torrents_list:
+            comment = getattr(torrent, "comment", "") or ""
+            if torrent_id in comment:
+                # Verify it's a proper match (not just a substring)
+                pattern = rf"(?:/torrents/|^|\s)({re.escape(torrent_id)})(?:/|$|\s)"
+                if re.search(pattern, comment):
+                    return torrent
+        return None
+
     mock_client.get_torrent_info = MagicMock(side_effect=get_torrent_info)
     mock_client.get_files = MagicMock(side_effect=get_files)
     mock_client.rename_torrent = AsyncMock(side_effect=rename_torrent)
     mock_client.rename_folder = AsyncMock(side_effect=rename_folder)
     mock_client.rename_file = AsyncMock(side_effect=rename_file)
+    mock_client.get_all_torrents = MagicMock(side_effect=get_all_torrents)
+    mock_client.find_torrent_by_comment_id = MagicMock(side_effect=find_torrent_by_comment_id)
+    # Store the list reference so tests can modify it
+    mock_client._mock_torrents_list = mock_torrents_list
     return mock_client
 
 
@@ -687,6 +710,259 @@ class TestPreviewRenameEndpoint:
         """Preview without required fields should return 422."""
         response = await async_client.post("/rename/preview", json={})
         assert response.status_code == 422
+
+
+class TestFindTorrentEndpoint:
+    """Test find torrent by ID endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_find_torrent_by_url_success(self, async_client, mock_qbit_client):
+        """Find torrent by URL should return hash when found."""
+        # Setup mock torrents with comments
+        torrent1 = MagicMock()
+        torrent1.hash = "ABC123DEF456GHI789JKL012MNO345PQR678STU"
+        torrent1.name = "Torrent.Without.ID"
+        torrent1.comment = "This torrent was downloaded from SomeTracker.cc."
+
+        torrent2 = MagicMock()
+        torrent2.hash = "XYZ789ABC123DEF456GHI789JKL012MNO345PQR"
+        torrent2.name = "Torrent.With.ID"
+        torrent2.comment = (
+            "This torrent was downloaded from domain. https://domain/torrents/342558"
+        )
+
+        torrent3 = MagicMock()
+        torrent3.hash = "DEF456GHI789JKL012MNO345PQR678STU901ABC"
+        torrent3.name = "Another.Torrent"
+        torrent3.comment = (
+            "This torrent was downloaded from domain. https://domain/torrents/999999"
+        )
+
+        mock_qbit_client._mock_torrents_list[:] = [torrent1, torrent2, torrent3]
+
+        response = await async_client.post(
+            "/find/torrent",
+            json={"torrent_id": "https://domain/torrents/342558"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "found"
+        assert data["torrent_id"] == "342558"
+        assert data["torrent_hash"] == "XYZ789ABC123DEF456GHI789JKL012MNO345PQR"
+        assert "Match found" in data["reason"]
+
+    @pytest.mark.asyncio
+    async def test_find_torrent_by_number_success(self, async_client, mock_qbit_client):
+        """Find torrent by number should return hash when found."""
+        # Setup mock torrents with comments
+        torrent1 = MagicMock()
+        torrent1.hash = "ABC123DEF456GHI789JKL012MNO345PQR678STU"
+        torrent1.name = "Torrent.Without.ID"
+        torrent1.comment = "This torrent was downloaded from SomeTracker.cc."
+
+        torrent2 = MagicMock()
+        torrent2.hash = "XYZ789ABC123DEF456GHI789JKL012MNO345PQR"
+        torrent2.name = "Torrent.With.ID"
+        torrent2.comment = (
+            "This torrent was downloaded from domain. https://domain/torrents/342558"
+        )
+
+        mock_qbit_client._mock_torrents_list[:] = [torrent1, torrent2]
+
+        response = await async_client.post(
+            "/find/torrent",
+            json={"torrent_id": "342558"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "found"
+        assert data["torrent_id"] == "342558"
+        assert data["torrent_hash"] == "XYZ789ABC123DEF456GHI789JKL012MNO345PQR"
+        assert "Match found" in data["reason"]
+
+    @pytest.mark.asyncio
+    async def test_find_torrent_not_found(self, async_client, mock_qbit_client):
+        """Find torrent should return not_found when ID doesn't exist."""
+        # Setup mock torrents without matching ID
+        torrent1 = MagicMock()
+        torrent1.hash = "ABC123DEF456GHI789JKL012MNO345PQR678STU"
+        torrent1.name = "Torrent.Without.ID"
+        torrent1.comment = "This torrent was downloaded from SomeTracker.cc."
+
+        torrent2 = MagicMock()
+        torrent2.hash = "XYZ789ABC123DEF456GHI789JKL012MNO345PQR"
+        torrent2.name = "Torrent.With.Different.ID"
+        torrent2.comment = (
+            "This torrent was downloaded from domain. https://domain/torrents/999999"
+        )
+
+        mock_qbit_client._mock_torrents_list[:] = [torrent1, torrent2]
+
+        response = await async_client.post(
+            "/find/torrent",
+            json={"torrent_id": "342558"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "not_found"
+        assert data["torrent_id"] == "342558"
+        assert data["torrent_hash"] is None
+        assert "No torrent found" in data["reason"]
+
+    @pytest.mark.asyncio
+    async def test_find_torrent_empty_list(self, async_client, mock_qbit_client):
+        """Find torrent should return not_found when no torrents exist."""
+        mock_qbit_client._mock_torrents_list[:] = []
+
+        response = await async_client.post(
+            "/find/torrent",
+            json={"torrent_id": "342558"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "not_found"
+        assert data["torrent_id"] == "342558"
+        assert data["torrent_hash"] is None
+
+    @pytest.mark.asyncio
+    async def test_find_torrent_invalid_url_format(self, async_client, mock_qbit_client):
+        """Find torrent should return error for invalid URL format."""
+        response = await async_client.post(
+            "/find/torrent",
+            json={"torrent_id": "https://example.com/invalid/path/342558"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "error"
+        assert data["torrent_id"] == "https://example.com/invalid/path/342558"
+        assert data["torrent_hash"] is None
+        assert "Invalid URL format" in data["reason"]
+
+    @pytest.mark.asyncio
+    async def test_find_torrent_invalid_number_format(self, async_client, mock_qbit_client):
+        """Find torrent should return error for non-numeric ID."""
+        response = await async_client.post(
+            "/find/torrent",
+            json={"torrent_id": "not-a-number"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "error"
+        assert data["torrent_id"] == "not-a-number"
+        assert data["torrent_hash"] is None
+        assert "Invalid ID format" in data["reason"]
+
+    @pytest.mark.asyncio
+    async def test_find_torrent_comment_without_url(self, async_client, mock_qbit_client):
+        """Find torrent should work when comment has ID without URL."""
+        # Setup mock torrent with ID in comment but not in URL format
+        torrent = MagicMock()
+        torrent.hash = "ABC123DEF456GHI789JKL012MNO345PQR678STU"
+        torrent.name = "Torrent.With.ID.In.Comment"
+        torrent.comment = "Torrent ID: 342558"
+
+        mock_qbit_client._mock_torrents_list[:] = [torrent]
+
+        response = await async_client.post(
+            "/find/torrent",
+            json={"torrent_id": "342558"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "found"
+        assert data["torrent_id"] == "342558"
+        assert data["torrent_hash"] == "ABC123DEF456GHI789JKL012MNO345PQR678STU"
+
+    @pytest.mark.asyncio
+    async def test_find_torrent_multiple_matches_returns_first(
+        self, async_client, mock_qbit_client
+    ):
+        """Find torrent should return first match when multiple torrents have same ID."""
+        # Setup multiple torrents with same ID (edge case)
+        torrent1 = MagicMock()
+        torrent1.hash = "FIRST123DEF456GHI789JKL012MNO345PQR678STU"
+        torrent1.name = "First.Torrent"
+        torrent1.comment = (
+            "This torrent was downloaded from domain. https://domain/torrents/342558"
+        )
+
+        torrent2 = MagicMock()
+        torrent2.hash = "SECOND789ABC123DEF456GHI789JKL012MNO345PQR"
+        torrent2.name = "Second.Torrent"
+        torrent2.comment = (
+            "This torrent was downloaded from domain. https://domain/torrents/342558"
+        )
+
+        mock_qbit_client._mock_torrents_list[:] = [torrent1, torrent2]
+
+        response = await async_client.post(
+            "/find/torrent",
+            json={"torrent_id": "342558"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "found"
+        assert data["torrent_id"] == "342558"
+        # Should return first match
+        assert data["torrent_hash"] == "FIRST123DEF456GHI789JKL012MNO345PQR678STU"
+
+    @pytest.mark.asyncio
+    async def test_find_torrent_comment_empty(self, async_client, mock_qbit_client):
+        """Find torrent should handle torrents with empty comments."""
+        torrent = MagicMock()
+        torrent.hash = "ABC123DEF456GHI789JKL012MNO345PQR678STU"
+        torrent.name = "Torrent.Without.Comment"
+        torrent.comment = ""
+
+        mock_qbit_client._mock_torrents_list[:] = [torrent]
+
+        response = await async_client.post(
+            "/find/torrent",
+            json={"torrent_id": "342558"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "not_found"
+
+    @pytest.mark.asyncio
+    async def test_find_torrent_comment_none(self, async_client, mock_qbit_client):
+        """Find torrent should handle torrents with None comments."""
+        torrent = MagicMock()
+        torrent.hash = "ABC123DEF456GHI789JKL012MNO345PQR678STU"
+        torrent.name = "Torrent.Without.Comment"
+        torrent.comment = None
+
+        mock_qbit_client._mock_torrents_list[:] = [torrent]
+
+        response = await async_client.post(
+            "/find/torrent",
+            json={"torrent_id": "342558"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "not_found"
+
+    @pytest.mark.asyncio
+    async def test_find_torrent_missing_field(self, async_client, mock_qbit_client):
+        """Find torrent should return validation error for missing torrent_id."""
+        response = await async_client.post(
+            "/find/torrent",
+            json={},
+        )
+
+        assert response.status_code == 422
+        data = response.json()
+        assert "torrent_id" in str(data).lower()
 
 
 class TestPreviewRenameSingleFile:

@@ -204,3 +204,26 @@ class PreviewRenameResponse(BaseModel):
     warnings: list[str] = Field(
         default_factory=list, description="Any warnings about the rename operation"
     )
+
+
+# =============================================================================
+# Find Torrent by ID Models
+# =============================================================================
+
+
+class FindTorrentRequest(BaseModel):
+    """Request model for find torrent by ID endpoint."""
+
+    torrent_id: str = Field(
+        ...,
+        description="Torrent ID from tracker (can be URL like https://domain/torrents/342558 or just number like 342558)",
+    )
+
+
+class FindTorrentResponse(BaseModel):
+    """Response model for find torrent by ID endpoint."""
+
+    status: str = Field(..., description="Status: found, not_found, error")
+    torrent_id: str = Field(..., description="The torrent ID that was searched")
+    torrent_hash: str | None = Field(default=None, description="Torrent hash if found")
+    reason: str | None = Field(default=None, description="Error or not found reason")

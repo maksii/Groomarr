@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, Request
@@ -12,6 +13,8 @@ from .arrapi import ArrClient
 from .config import TrackerRules, reload_rules, rules, settings, setup_logging
 from .models import (
     FileRenamePreview,
+    FindTorrentRequest,
+    FindTorrentResponse,
     ManualRenameRequest,
     ManualRenameResponse,
     PreviewRenameResponse,
@@ -696,6 +699,80 @@ async def preview_rename(request: ManualRenameRequest):
     )
 
     return response
+
+
+@app.post("/find/torrent", response_model=FindTorrentResponse)
+async def find_torrent_by_id(request: FindTorrentRequest):
+    """Find a torrent by tracker ID from its comment.
+
+    Accepts either a full URL (e.g., https://domain/torrents/342558)
+    or just the ID number (e.g., 342558). Searches through all torrents
+    in qBittorrent and matches the ID in the comment property.
+
+    Args:
+        request: FindTorrentRequest with torrent_id (URL or number)
+
+    Returns:
+        FindTorrentResponse with torrent hash if found
+    """
+    torrent_id_input = request.torrent_id.strip()
+    logger.info(f"[find] Received request to find torrent with ID: {torrent_id_input}")
+
+    # Extract ID from URL or use as-is if it's just a number
+    torrent_id = None
+    if torrent_id_input.startswith("http"):
+        # Extract ID from URL pattern like https://domain/torrents/342558
+        match = re.search(r"/torrents/(\d+)", torrent_id_input)
+        if match:
+            torrent_id = match.group(1)
+        else:
+            logger.warning(f"[find] Could not extract ID from URL: {torrent_id_input}")
+            return FindTorrentResponse(
+                status="error",
+                torrent_id=torrent_id_input,
+                reason="Invalid URL format. Expected pattern: .../torrents/ID",
+            )
+    else:
+        # Assume it's just the ID number
+        if torrent_id_input.isdigit():
+            torrent_id = torrent_id_input
+        else:
+            logger.warning(f"[find] Invalid ID format (not a number): {torrent_id_input}")
+            return FindTorrentResponse(
+                status="error",
+                torrent_id=torrent_id_input,
+                reason="Invalid ID format. Expected a number or URL containing /torrents/ID",
+            )
+
+    if not torrent_id:
+        return FindTorrentResponse(
+            status="error",
+            torrent_id=torrent_id_input,
+            reason="Could not extract torrent ID from input",
+        )
+
+    # Search for torrent with matching ID in comment
+    torrent = qbit_client.find_torrent_by_comment_id(torrent_id)
+
+    if torrent:
+        torrent_hash = torrent.hash
+        hash_short = torrent_hash[:8]
+        logger.info(
+            f"[find] Found torrent with ID {torrent_id}: hash={hash_short}... name='{torrent.name}'"
+        )
+        return FindTorrentResponse(
+            status="found",
+            torrent_id=torrent_id,
+            torrent_hash=torrent_hash,
+            reason=f"Match found, hash: {hash_short}...",
+        )
+    else:
+        logger.info(f"[find] No torrent found with ID {torrent_id} in comments")
+        return FindTorrentResponse(
+            status="not_found",
+            torrent_id=torrent_id,
+            reason=f"No torrent found with ID {torrent_id} in comment property",
+        )
 
 
 @app.post("/webhook/radarr", response_model=WebhookResponse)
