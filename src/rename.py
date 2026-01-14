@@ -533,22 +533,34 @@ def insert_episode_into_name(new_name: str, episode_info: tuple[str, str, str]) 
     Returns:
         New name with episode identifier inserted
     """
-    season_num, ep_marker, episode_num = episode_info
-    full_identifier = build_episode_identifier(season_num, ep_marker, episode_num)
+    file_season_num, ep_marker, episode_num = episode_info
 
     # Check if new_name already has an episode pattern FIRST
     # This must be checked before season-only pattern to avoid partial matches
-    if EPISODE_PATTERN.search(new_name):
-        # Already has episode info, replace it with the correct one
+    title_episode_match = EPISODE_PATTERN.search(new_name)
+    if title_episode_match:
+        # Extract season from the title (authoritative source)
+        title_season = title_episode_match.group(1)
+        # Build identifier using title's season + file's episode number
+        full_identifier = build_episode_identifier(title_season, ep_marker, episode_num)
+        # Replace the episode pattern in the title
         return EPISODE_PATTERN.sub(full_identifier, new_name, count=1)
 
     # Check if new_name has season-only pattern (no episode)
     season_match = SEASON_ONLY_PATTERN.search(new_name)
     if season_match:
+        # Extract season from the title (authoritative source)
+        title_season = season_match.group(1)
+        # Build identifier using title's season + file's episode number
+        full_identifier = build_episode_identifier(title_season, ep_marker, episode_num)
         # Replace season-only with full season+episode
         return SEASON_ONLY_PATTERN.sub(full_identifier, new_name, count=1)
 
-    # No season pattern found, try to insert after series name
+    # No season pattern found in title, use season from file's episode_info
+    # Build identifier using file's season + episode number
+    full_identifier = build_episode_identifier(file_season_num, ep_marker, episode_num)
+
+    # Try to insert after series name
     # Look for a good insertion point (before quality markers, year, etc.)
     # Common patterns to insert before: year (4 digits), quality (1080p, 720p, etc.)
     insertion_patterns = [
