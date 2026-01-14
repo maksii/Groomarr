@@ -1095,6 +1095,13 @@ class TestMatchesIndexer:
         """Test that invalid regex patterns don't crash."""
         # Invalid regex should be handled gracefully
         assert matches_indexer("Test", ["/[invalid/"]) is False
+        assert matches_indexer("TrackerA", ["/(invalid[regex/"]) is False
+
+    def test_invalid_wildcard(self):
+        """Test that wildcard patterns work correctly."""
+        # Wildcard * should match anything
+        result = matches_indexer("TrackerA", ["*"])
+        assert result is True
 
 
 class TestTrackerRulesFromDict:
@@ -1481,24 +1488,6 @@ trackers:
         assert any("global" in s and "skip_title_patterns" in s for s in summary)
         assert any("tracker1" in s for s in summary)
         assert any("tracker2" in s for s in summary)
-
-
-class TestMatchesIndexer:
-    """Test matches_indexer function."""
-
-    def test_matches_indexer_invalid_regex(self):
-        """matches_indexer should handle invalid regex patterns gracefully."""
-        # Invalid regex pattern
-        result = matches_indexer("TrackerA", ["/(invalid[regex/"])
-        assert result is False
-
-    def test_matches_indexer_invalid_wildcard(self):
-        """matches_indexer should handle invalid wildcard patterns gracefully."""
-        # Pattern that becomes invalid regex after conversion
-        # This is harder to trigger, but we can test with a pattern that causes issues
-        result = matches_indexer("TrackerA", ["*"])
-        # Should not raise, wildcard * should match anything
-        assert result is True
 
 
 class TestTrackerRulesSummary:
