@@ -2371,5 +2371,371 @@ score_validation_policy: "warn"
 # =============================================================================
 
 
+# =============================================================================
+# Special Characters Tests
+# =============================================================================
+
+
+class TestSpecialCharacterTitles:
+    """Test webhook processing with titles containing special characters."""
+
+    @pytest.mark.asyncio
+    async def test_radarr_webhook_with_special_chars(self, async_client, mock_qbit_client):
+        """Test Radarr webhook with movie title containing special characters."""
+        # Movie: K-ON! The Movie (2011)
+        payload = {
+            "eventType": "Grab",
+            "movie": {
+                "id": 2001,
+                "title": "K-ON! The Movie",
+                "year": 2011,
+                "tmdbId": 56789,
+                "imdbId": "tt0000002",
+            },
+            "release": {
+                "releaseTitle": "K-ON! The Movie (2011) 1080p BluRay-Group",
+                "quality": "Bluray-1080p",
+                "releaseGroup": "Group",
+                "size": 10518539264,
+                "indexer": "TrackerA (API)",
+                "customFormats": ["1080p"],
+                "customFormatScore": 5000,
+            },
+            "downloadId": "KON1234567890ABCDEF1234567890ABCDEF123456",
+            "downloadClient": "movies_qBit",
+            "downloadClientType": "qBittorrent",
+            "instanceName": "Radarr",
+        }
+
+        response = await async_client.post("/webhook/radarr", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "queued"
+        assert data["torrent_hash"] == payload["downloadId"]
+
+    @pytest.mark.asyncio
+    async def test_radarr_webhook_with_colon_and_slash(self, async_client, mock_qbit_client):
+        """Test Radarr webhook with title containing colon and slash."""
+        # Movie: Fate/stay night: Heaven's Feel
+        payload = {
+            "eventType": "Grab",
+            "movie": {
+                "id": 2002,
+                "title": "Fate/stay night: Heaven's Feel - III. Spring Song",
+                "year": 2020,
+                "tmdbId": 56790,
+            },
+            "release": {
+                "releaseTitle": "Fate/stay night: Heaven's Feel - III. Spring Song (2020) 4K-Group",
+                "quality": "Bluray-2160p",
+                "releaseGroup": "Group",
+                "indexer": "TrackerA (API)",
+            },
+            "downloadId": "FATE1234567890ABCDEF1234567890ABCDEF12345",
+            "downloadClient": "movies_qBit",
+            "downloadClientType": "qBittorrent",
+        }
+
+        response = await async_client.post("/webhook/radarr", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "queued"
+
+    @pytest.mark.asyncio
+    async def test_radarr_webhook_with_ampersand(self, async_client, mock_qbit_client):
+        """Test Radarr webhook with title containing ampersand."""
+        # Movie: Love, Chunibyo & Other Delusions! Take on Me
+        payload = {
+            "eventType": "Grab",
+            "movie": {
+                "id": 2003,
+                "title": "Love, Chunibyo & Other Delusions! Take on Me",
+                "year": 2018,
+            },
+            "release": {
+                "releaseTitle": "Love, Chunibyo & Other Delusions! Take on Me (2018) 1080p-Group",
+                "quality": "Bluray-1080p",
+                "indexer": "TrackerA (API)",
+            },
+            "downloadId": "LOVE1234567890ABCDEF1234567890ABCDEF123456",
+            "downloadClient": "movies_qBit",
+            "downloadClientType": "qBittorrent",
+        }
+
+        response = await async_client.post("/webhook/radarr", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "queued"
+
+    @pytest.mark.asyncio
+    async def test_radarr_webhook_with_apostrophe(self, async_client, mock_qbit_client):
+        """Test Radarr webhook with title containing apostrophe."""
+        # Movie: JoJo's Bizarre Adventure: Diamond is Unbreakable Chapter I
+        payload = {
+            "eventType": "Grab",
+            "movie": {
+                "id": 2004,
+                "title": "JoJo's Bizarre Adventure: Diamond is Unbreakable Chapter I",
+                "year": 2017,
+            },
+            "release": {
+                "releaseTitle": "JoJo's Bizarre Adventure: Diamond is Unbreakable Chapter I (2017) BluRay-Group",
+                "quality": "Bluray-1080p",
+                "indexer": "TrackerA (API)",
+            },
+            "downloadId": "JOJO1234567890ABCDEF1234567890ABCDEF123456",
+            "downloadClient": "movies_qBit",
+            "downloadClientType": "qBittorrent",
+        }
+
+        response = await async_client.post("/webhook/radarr", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "queued"
+
+    @pytest.mark.asyncio
+    async def test_radarr_webhook_with_period(self, async_client, mock_qbit_client):
+        """Test Radarr webhook with title containing period."""
+        # Movie: D.Gray-man (hypothetical movie)
+        payload = {
+            "eventType": "Grab",
+            "movie": {
+                "id": 2005,
+                "title": "D.Gray-man: The Movie",
+                "year": 2016,
+            },
+            "release": {
+                "releaseTitle": "D.Gray-man: The Movie (2016) 1080p BluRay-Group",
+                "quality": "Bluray-1080p",
+                "indexer": "TrackerA (API)",
+            },
+            "downloadId": "DGRAY1234567890ABCDEF1234567890ABCDEF1234",
+            "downloadClient": "movies_qBit",
+            "downloadClientType": "qBittorrent",
+        }
+
+        response = await async_client.post("/webhook/radarr", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "queued"
+
+    @pytest.mark.asyncio
+    async def test_sonarr_webhook_with_exclamation(self, async_client, mock_qbit_client):
+        """Test Sonarr webhook with TV series title containing exclamation mark."""
+        # TV: K-ON! S01
+        payload = {
+            "eventType": "Grab",
+            "series": {
+                "id": 3001,
+                "title": "K-ON!",
+                "path": "/tv/K-ON!",
+                "tvdbId": 234567,
+            },
+            "episodes": [
+                {
+                    "id": 20001,
+                    "episodeNumber": 1,
+                    "seasonNumber": 1,
+                    "title": "Disband the Club!",
+                }
+            ],
+            "release": {
+                "releaseTitle": "K-ON! S01E01 1080p BluRay-Group",
+                "quality": "Bluray-1080p",
+                "releaseGroup": "Group",
+                "indexer": "TrackerB (API)",
+            },
+            "downloadId": "KONTV1234567890ABCDEF1234567890ABCDEF1234",
+            "downloadClient": "tv_qBit",
+            "downloadClientType": "qBittorrent",
+        }
+
+        response = await async_client.post("/webhook/sonarr", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "queued"
+
+    @pytest.mark.asyncio
+    async def test_sonarr_webhook_with_hyphen_and_colon(self, async_client, mock_qbit_client):
+        """Test Sonarr webhook with title containing hyphen and colon."""
+        # TV: Re:ZERO -Starting Life in Another World- S02
+        payload = {
+            "eventType": "Grab",
+            "series": {
+                "id": 3002,
+                "title": "Re:ZERO -Starting Life in Another World-",
+                "path": "/tv/Re:ZERO",
+            },
+            "episodes": [
+                {
+                    "id": 20002,
+                    "episodeNumber": 1,
+                    "seasonNumber": 2,
+                    "title": "The End of the Beginning",
+                }
+            ],
+            "release": {
+                "releaseTitle": "Re:ZERO -Starting Life in Another World- S02E01 1080p WEBDL-Group",
+                "quality": "WEBDL-1080p",
+                "indexer": "TrackerB (API)",
+            },
+            "downloadId": "REZERO1234567890ABCDEF1234567890ABCDEF1234",
+            "downloadClient": "tv_qBit",
+            "downloadClientType": "qBittorrent",
+        }
+
+        response = await async_client.post("/webhook/sonarr", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "queued"
+
+    @pytest.mark.asyncio
+    async def test_sonarr_webhook_with_slash_and_colon(self, async_client, mock_qbit_client):
+        """Test Sonarr webhook with title containing slash and colon."""
+        # TV: Fate/stay night: Unlimited Blade Works S01
+        payload = {
+            "eventType": "Grab",
+            "series": {
+                "id": 3003,
+                "title": "Fate/stay night: Unlimited Blade Works",
+                "path": "/tv/Fate/stay night",
+            },
+            "episodes": [
+                {
+                    "id": 20003,
+                    "episodeNumber": 1,
+                    "seasonNumber": 1,
+                    "title": "Episode 1",
+                }
+            ],
+            "release": {
+                "releaseTitle": "Fate/stay night: Unlimited Blade Works S01E01 1080p-Group",
+                "quality": "WEBDL-1080p",
+                "indexer": "TrackerB (API)",
+            },
+            "downloadId": "FATETV1234567890ABCDEF1234567890ABCDEF1234",
+            "downloadClient": "tv_qBit",
+            "downloadClientType": "qBittorrent",
+        }
+
+        response = await async_client.post("/webhook/sonarr", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "queued"
+
+    @pytest.mark.asyncio
+    async def test_sonarr_webhook_with_ampersand_and_comma(self, async_client, mock_qbit_client):
+        """Test Sonarr webhook with title containing ampersand and comma."""
+        # TV: Love, Chunibyo & Other Delusions! S01
+        payload = {
+            "eventType": "Grab",
+            "series": {
+                "id": 3004,
+                "title": "Love, Chunibyo & Other Delusions!",
+                "path": "/tv/Love, Chunibyo & Other Delusions!",
+            },
+            "episodes": [
+                {
+                    "id": 20004,
+                    "episodeNumber": 1,
+                    "seasonNumber": 1,
+                    "title": "Episode 1",
+                }
+            ],
+            "release": {
+                "releaseTitle": "Love, Chunibyo & Other Delusions! S01E01 1080p-Group",
+                "quality": "WEBDL-1080p",
+                "indexer": "TrackerB (API)",
+            },
+            "downloadId": "LOVETV1234567890ABCDEF1234567890ABCDEF1234",
+            "downloadClient": "tv_qBit",
+            "downloadClientType": "qBittorrent",
+        }
+
+        response = await async_client.post("/webhook/sonarr", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "queued"
+
+    @pytest.mark.asyncio
+    async def test_sonarr_webhook_with_period(self, async_client, mock_qbit_client):
+        """Test Sonarr webhook with title containing period."""
+        # TV: D.Gray-man S01
+        payload = {
+            "eventType": "Grab",
+            "series": {
+                "id": 3005,
+                "title": "D.Gray-man",
+                "path": "/tv/D.Gray-man",
+            },
+            "episodes": [
+                {
+                    "id": 20005,
+                    "episodeNumber": 1,
+                    "seasonNumber": 1,
+                    "title": "Episode 1",
+                }
+            ],
+            "release": {
+                "releaseTitle": "D.Gray-man S01E01 1080p BluRay-Group",
+                "quality": "Bluray-1080p",
+                "indexer": "TrackerB (API)",
+            },
+            "downloadId": "DGRAYTV1234567890ABCDEF1234567890ABCDEF123",
+            "downloadClient": "tv_qBit",
+            "downloadClientType": "qBittorrent",
+        }
+
+        response = await async_client.post("/webhook/sonarr", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "queued"
+
+    @pytest.mark.asyncio
+    async def test_sonarr_webhook_with_double_question_mark(self, async_client, mock_qbit_client):
+        """Test Sonarr webhook with title containing double question marks."""
+        # TV: Is the Order a Rabbit??
+        payload = {
+            "eventType": "Grab",
+            "series": {
+                "id": 3006,
+                "title": "Is the Order a Rabbit??",
+                "path": "/tv/Is the Order a Rabbit??",
+            },
+            "episodes": [
+                {
+                    "id": 20006,
+                    "episodeNumber": 1,
+                    "seasonNumber": 1,
+                    "title": "Episode 1",
+                }
+            ],
+            "release": {
+                "releaseTitle": "Is the Order a Rabbit?? S01E01 1080p-Group",
+                "quality": "WEBDL-1080p",
+                "indexer": "TrackerB (API)",
+            },
+            "downloadId": "RABBIT1234567890ABCDEF1234567890ABCDEF1234",
+            "downloadClient": "tv_qBit",
+            "downloadClientType": "qBittorrent",
+        }
+
+        response = await async_client.post("/webhook/sonarr", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "queued"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

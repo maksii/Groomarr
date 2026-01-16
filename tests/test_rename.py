@@ -539,6 +539,34 @@ class TestInsertEpisodeIntoName:
         result = insert_episode_into_name("SeriesX S01E01 1080p WEBDL", episode_info)
         assert result == "SeriesX S01E03 1080p WEBDL"
 
+    def test_season_from_title_takes_priority(self):
+        """Test that season from title takes priority over season from file.
+
+        Bug fix: When file extraction returns wrong season (e.g., "01" default
+        from anime-style files), the season from the release title should be used.
+
+        Example: Title has S02E05, file extraction returns ("01", "E", "10")
+        Result should be S02E10, not S01E10
+        """
+        # Title has season 2, file extraction wrongly detected season 1
+        episode_info = ("01", "E", "10")  # Wrong season from anime-style file
+        result = insert_episode_into_name("SeriesX S02E05 1080p WEBDL", episode_info)
+        assert result == "SeriesX S02E10 1080p WEBDL"
+
+    def test_season_from_title_priority_different_seasons(self):
+        """Test season priority with various season numbers."""
+        # Season 5 in title, file extraction says season 1
+        episode_info = ("01", "E", "07")
+        result = insert_episode_into_name("Anime.Series.S05E01.1080p.WEB-DL", episode_info)
+        assert result == "Anime.Series.S05E07.1080p.WEB-DL"
+
+    def test_season_only_pattern_uses_title_season(self):
+        """Test that season-only pattern in title is preserved."""
+        # Title has S03 (no episode), file has episode 12 with wrong season 01
+        episode_info = ("01", "E", "12")
+        result = insert_episode_into_name("SeriesX S03 1080p WEBDL", episode_info)
+        assert result == "SeriesX S03E12 1080p WEBDL"
+
     def test_insert_before_year(self):
         """Test inserting episode before year when no season pattern."""
         episode_info = ("01", "E", "05")
@@ -1067,6 +1095,13 @@ class TestMatchesIndexer:
         """Test that invalid regex patterns don't crash."""
         # Invalid regex should be handled gracefully
         assert matches_indexer("Test", ["/[invalid/"]) is False
+        assert matches_indexer("TrackerA", ["/(invalid[regex/"]) is False
+
+    def test_invalid_wildcard(self):
+        """Test that wildcard patterns work correctly."""
+        # Wildcard * should match anything
+        result = matches_indexer("TrackerA", ["*"])
+        assert result is True
 
 
 class TestTrackerRulesFromDict:
@@ -1385,6 +1420,202 @@ trackers:
         assert rules.trackers == []
         # Global rules should be defaults
         assert rules.global_rules.prefix == ""
+
+    def test_config_yaml_parse_error(self, tmp_path):
+        """Test handling when YAML file has parse errors."""
+        config_file = tmp_path / "invalid.yaml"
+        config_file.write_text("invalid: yaml: [unclosed")
+
+        rules = RenameRules.from_yaml(str(config_file))
+
+        assert rules.config_found is True
+        assert rules.config_error is not None
+        assert "unclosed" in rules.config_error.lower() or "yaml" in rules.config_error.lower()
+
+    def test_get_active_filters_summary(self, tmp_path):
+        """Test get_active_filters_summary returns correct summary."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  indexers_include: ["TrackerA", "TrackerB"]
+  indexers_exclude: ["BadTracker"]
+  qualities_include: ["1080p"]
+  min_customformat_score: 100
+  release_groups_include: ["GroupA"]
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        summary = rules.get_active_filters_summary()
+
+        assert len(summary) > 0
+        assert any("indexers_include" in s for s in summary)
+        assert any("indexers_exclude" in s for s in summary)
+        assert any("qualities_include" in s for s in summary)
+        assert any("min_customformat_score" in s for s in summary)
+        assert any("release_groups_include" in s for s in summary)
+
+    def test_get_active_rules_summary(self, tmp_path):
+        """Test get_active_rules_summary returns correct summary."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  prefix: "[TEST] "
+  suffix: " [Auto]"
+  remove_patterns: ["pattern1", "pattern2"]
+  replace_patterns:
+    ".": " "
+  skip_title_patterns: ["PROPER"]
+
+trackers:
+  - name: "tracker1"
+    match: ["TrackerA"]
+    rules:
+      prefix: "[Tracker1] "
+  - name: "tracker2"
+    match: ["TrackerB"]
+    rules:
+      suffix: " [T2]"
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        summary = rules.get_active_rules_summary()
+
+        assert len(summary) > 0
+        assert any("global" in s and "prefix" in s for s in summary)
+        assert any("global" in s and "suffix" in s for s in summary)
+        assert any("global" in s and "remove_patterns" in s for s in summary)
+        assert any("global" in s and "replace_patterns" in s for s in summary)
+        assert any("global" in s and "skip_title_patterns" in s for s in summary)
+        assert any("tracker1" in s for s in summary)
+        assert any("tracker2" in s for s in summary)
+
+
+class TestTrackerRulesSummary:
+    """Test TrackerRules summary methods."""
+
+    def test_get_active_filters_summary_all_filters(self):
+        """get_active_filters_summary should list all active filters."""
+        rules = TrackerRules()
+        rules.indexers_include = ["A", "B"]
+        rules.indexers_exclude = ["C"]
+        rules.qualities_include = ["1080p"]
+        rules.qualities_exclude = ["CAM"]
+        rules.customformats_require_any = ["HDR"]
+        rules.customformats_exclude = ["x264"]
+        rules.min_customformat_score = 100
+        rules.download_clients_include = ["qBit"]
+        rules.download_clients_exclude = ["Deluge"]
+        rules.release_groups_include = ["GroupA"]
+        rules.release_groups_exclude = ["GroupB"]
+
+        summary = rules.get_active_filters_summary()
+
+        assert len(summary) == 11
+        assert any("indexers_include" in s for s in summary)
+        assert any("indexers_exclude" in s for s in summary)
+        assert any("qualities_include" in s for s in summary)
+        assert any("qualities_exclude" in s for s in summary)
+        assert any("customformats_require_any" in s for s in summary)
+        assert any("customformats_exclude" in s for s in summary)
+        assert any("min_customformat_score" in s for s in summary)
+        assert any("download_clients_include" in s for s in summary)
+        assert any("download_clients_exclude" in s for s in summary)
+        assert any("release_groups_include" in s for s in summary)
+        assert any("release_groups_exclude" in s for s in summary)
+
+    def test_get_active_filters_summary_empty(self):
+        """get_active_filters_summary should return empty list when no filters."""
+        rules = TrackerRules()
+        summary = rules.get_active_filters_summary()
+        assert summary == []
+
+    def test_get_active_rules_summary_all_rules(self):
+        """get_active_rules_summary should list all active rules."""
+        rules = TrackerRules()
+        rules.prefix = "[TEST] "
+        rules.suffix = " [Auto]"
+        rules.remove_patterns = ["pattern1", "pattern2"]
+        rules.replace_patterns = {".": " "}
+        rules.skip_title_patterns = ["PROPER"]
+
+        summary = rules.get_active_rules_summary()
+
+        assert len(summary) == 5
+        assert any("prefix" in s for s in summary)
+        assert any("suffix" in s for s in summary)
+        assert any("remove_patterns" in s for s in summary)
+        assert any("replace_patterns" in s for s in summary)
+        assert any("skip_title_patterns" in s for s in summary)
+
+    def test_get_active_rules_summary_empty(self):
+        """get_active_rules_summary should return empty list when no rules."""
+        rules = TrackerRules()
+        summary = rules.get_active_rules_summary()
+        assert summary == []
+
+
+class TestRenameRulesProperties:
+    """Test RenameRules convenience properties."""
+
+    def test_validate_custom_format_score_property(self, tmp_path):
+        """Test validate_custom_format_score property delegates to global."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  validate_custom_format_score: true
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        assert rules.validate_custom_format_score is True
+
+    def test_score_validation_policy_property(self, tmp_path):
+        """Test score_validation_policy property delegates to global."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  score_validation_policy: "warn"
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        assert rules.score_validation_policy == "warn"
+
+    def test_has_rename_rules_global_only(self, tmp_path):
+        """Test has_rename_rules with only global rules."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  prefix: "[TEST] "
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        assert rules.has_rename_rules() is True
+
+    def test_has_rename_rules_tracker_only(self, tmp_path):
+        """Test has_rename_rules with only tracker rules."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global:
+  prefix: ""
+
+trackers:
+  - name: "tracker"
+    match: ["TrackerA"]
+    rules:
+      prefix: "[T] "
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        assert rules.has_rename_rules() is True
+
+    def test_has_rename_rules_none(self, tmp_path):
+        """Test has_rename_rules when no rules configured."""
+        config_file = tmp_path / "rules.yaml"
+        config_file.write_text("""
+global: {}
+""")
+        rules = RenameRules.from_yaml(str(config_file))
+
+        assert rules.has_rename_rules() is False
 
 
 if __name__ == "__main__":
