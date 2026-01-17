@@ -6,9 +6,9 @@
 ![Python](https://img.shields.io/badge/python-3.11+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Fixes infinite download loops in Sonarr and Radarr by renaming torrents to match their original release titles, ensuring that metadata (Custom Formats, Release Groups) lost during filename parsing is preserved.
-
 A webhook service that "grooms" rough releases into presentable ones — automatically renaming torrents in qBittorrent when Sonarr or Radarr grabs a release.
+
+Fixes infinite download loops (Couldn't add release X from Indexer Y to download queue.) in Sonarr and Radarr by renaming torrents to match their original release titles, ensuring that metadata (Custom Formats, Release Groups) lost during filename parsing is preserved.
 
 ## Features
 
