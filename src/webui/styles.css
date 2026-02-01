@@ -157,18 +157,6 @@ header p {
   margin: 0;
 }
 
-.editor {
-  width: 100%;
-  min-height: 420px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  padding: 14px;
-  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 13px;
-  background: var(--input-bg);
-  color: inherit;
-}
-
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -205,6 +193,11 @@ button.ghost {
 button.ghost:hover {
   box-shadow: 0 6px 12px rgba(15, 23, 42, 0.08);
   transform: translateY(-1px);
+}
+
+button.small {
+  padding: 6px 12px;
+  font-size: 12px;
 }
 
 .status {
@@ -291,4 +284,91 @@ select {
   color: var(--muted);
   font-size: 12px;
   background: var(--surface-elevated);
+}
+
+.section {
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 24px;
+}
+
+.section:last-of-type {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.section h3 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.helper {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.list-item {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.list-item.two-col {
+  grid-template-columns: 1fr 1fr auto;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toggle input {
+  width: 20px;
+  height: 20px;
+}
+
+.tracker-card {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+}
+
+.tracker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.empty-state {
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(74, 207, 235, 0.08);
+  color: var(--muted);
+  font-size: 13px;
 }

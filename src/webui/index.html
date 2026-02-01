@@ -34,15 +34,280 @@
       <main class="panel">
         <section class="card">
           <div class="card-header">
-            <h2>Rules Editor</h2>
+            <h2>Rules Builder</h2>
             <span class="pill">Live config</span>
           </div>
-          <textarea
-            class="editor"
-            v-model="rulesYaml"
-            spellcheck="false"
-            aria-label="Rename rules YAML"
-          ></textarea>
+          <div class="section">
+            <h3>Global Rules</h3>
+            <p class="helper">
+              Configure defaults applied when a tracker-specific match is not found.
+            </p>
+            <div class="grid">
+              <div class="field">
+                <label>Prefix</label>
+                <input v-model="globalRules.prefix" placeholder="[TAG] " />
+              </div>
+              <div class="field">
+                <label>Suffix</label>
+                <input v-model="globalRules.suffix" placeholder=" [HD]" />
+              </div>
+              <div class="field">
+                <label>Score validation policy</label>
+                <select v-model="globalRules.score_validation_policy">
+                  <option value="block">Block on decrease</option>
+                  <option value="warn">Warn only</option>
+                </select>
+              </div>
+              <div class="field toggle">
+                <label>Validate custom format score</label>
+                <input type="checkbox" v-model="globalRules.validate_custom_format_score" />
+              </div>
+            </div>
+
+            <div class="field">
+              <label>Remove patterns</label>
+              <p class="helper">Example: \\[.*?\\] removes bracketed tags.</p>
+              <div class="list">
+                <div v-for="(item, index) in globalRules.remove_patterns" :key="`gr-remove-${index}`" class="list-item">
+                  <input v-model="globalRules.remove_patterns[index]" placeholder="Pattern" />
+                  <button class="ghost small" @click="removeListItem(globalRules.remove_patterns, index)">Remove</button>
+                </div>
+                <button class="ghost small" @click="addListItem(globalRules.remove_patterns)">Add pattern</button>
+              </div>
+            </div>
+
+            <div class="field">
+              <label>Replace patterns</label>
+              <p class="helper">Example: Replace \\s+ with a single space.</p>
+              <div class="list">
+                <div v-for="(item, index) in globalRules.replace_patterns" :key="`gr-replace-${index}`" class="list-item two-col">
+                  <input v-model="item.pattern" placeholder="Pattern" />
+                  <input v-model="item.replacement" placeholder="Replacement" />
+                  <button class="ghost small" @click="removeReplaceItem(globalRules.replace_patterns, index)">Remove</button>
+                </div>
+                <button class="ghost small" @click="addReplaceItem(globalRules.replace_patterns)">Add replacement</button>
+              </div>
+            </div>
+
+            <div class="field">
+              <label>Skip title patterns</label>
+              <p class="helper">Example: /sample/i skips titles matching Sample.</p>
+              <div class="list">
+                <div v-for="(item, index) in globalRules.skip_title_patterns" :key="`gr-skip-${index}`" class="list-item">
+                  <input v-model="globalRules.skip_title_patterns[index]" placeholder="Pattern" />
+                  <button class="ghost small" @click="removeListItem(globalRules.skip_title_patterns, index)">Remove</button>
+                </div>
+                <button class="ghost small" @click="addListItem(globalRules.skip_title_patterns)">Add pattern</button>
+              </div>
+            </div>
+
+            <div class="field">
+              <label>Indexer match patterns</label>
+              <p class="helper">Examples: TrackerName, Tracker*, /.*anime.*/</p>
+              <div class="list">
+                <div v-for="(item, index) in globalRules.indexers_include" :key="`gr-index-include-${index}`" class="list-item">
+                  <input v-model="globalRules.indexers_include[index]" placeholder="Include pattern" />
+                  <button class="ghost small" @click="removeListItem(globalRules.indexers_include, index)">Remove</button>
+                </div>
+                <button class="ghost small" @click="addListItem(globalRules.indexers_include)">Add include</button>
+                <div v-for="(item, index) in globalRules.indexers_exclude" :key="`gr-index-exclude-${index}`" class="list-item">
+                  <input v-model="globalRules.indexers_exclude[index]" placeholder="Exclude pattern" />
+                  <button class="ghost small" @click="removeListItem(globalRules.indexers_exclude, index)">Remove</button>
+                </div>
+                <button class="ghost small" @click="addListItem(globalRules.indexers_exclude)">Add exclude</button>
+              </div>
+            </div>
+
+            <div class="grid">
+              <div class="field">
+                <label>Qualities include</label>
+                <div class="list">
+                  <div v-for="(item, index) in globalRules.qualities_include" :key="`gr-quality-inc-${index}`" class="list-item">
+                    <input v-model="globalRules.qualities_include[index]" placeholder="Quality pattern" />
+                    <button class="ghost small" @click="removeListItem(globalRules.qualities_include, index)">Remove</button>
+                  </div>
+                  <button class="ghost small" @click="addListItem(globalRules.qualities_include)">Add include</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>Qualities exclude</label>
+                <div class="list">
+                  <div v-for="(item, index) in globalRules.qualities_exclude" :key="`gr-quality-exc-${index}`" class="list-item">
+                    <input v-model="globalRules.qualities_exclude[index]" placeholder="Quality pattern" />
+                    <button class="ghost small" @click="removeListItem(globalRules.qualities_exclude, index)">Remove</button>
+                  </div>
+                  <button class="ghost small" @click="addListItem(globalRules.qualities_exclude)">Add exclude</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid">
+              <div class="field">
+                <label>Custom formats (require any)</label>
+                <div class="list">
+                  <div v-for="(item, index) in globalRules.customformats_require_any" :key="`gr-cf-any-${index}`" class="list-item">
+                    <input v-model="globalRules.customformats_require_any[index]" placeholder="Custom format" />
+                    <button class="ghost small" @click="removeListItem(globalRules.customformats_require_any, index)">Remove</button>
+                  </div>
+                  <button class="ghost small" @click="addListItem(globalRules.customformats_require_any)">Add format</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>Custom formats (exclude)</label>
+                <div class="list">
+                  <div v-for="(item, index) in globalRules.customformats_exclude" :key="`gr-cf-ex-${index}`" class="list-item">
+                    <input v-model="globalRules.customformats_exclude[index]" placeholder="Custom format" />
+                    <button class="ghost small" @click="removeListItem(globalRules.customformats_exclude, index)">Remove</button>
+                  </div>
+                  <button class="ghost small" @click="addListItem(globalRules.customformats_exclude)">Add exclude</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>Minimum custom format score</label>
+                <input type="number" v-model.number="globalRules.min_customformat_score" placeholder="0" />
+              </div>
+            </div>
+
+            <div class="grid">
+              <div class="field">
+                <label>Download clients include</label>
+                <div class="list">
+                  <div v-for="(item, index) in globalRules.download_clients_include" :key="`gr-dl-inc-${index}`" class="list-item">
+                    <input v-model="globalRules.download_clients_include[index]" placeholder="Client name" />
+                    <button class="ghost small" @click="removeListItem(globalRules.download_clients_include, index)">Remove</button>
+                  </div>
+                  <button class="ghost small" @click="addListItem(globalRules.download_clients_include)">Add include</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>Download clients exclude</label>
+                <div class="list">
+                  <div v-for="(item, index) in globalRules.download_clients_exclude" :key="`gr-dl-ex-${index}`" class="list-item">
+                    <input v-model="globalRules.download_clients_exclude[index]" placeholder="Client name" />
+                    <button class="ghost small" @click="removeListItem(globalRules.download_clients_exclude, index)">Remove</button>
+                  </div>
+                  <button class="ghost small" @click="addListItem(globalRules.download_clients_exclude)">Add exclude</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid">
+              <div class="field">
+                <label>Release groups include</label>
+                <div class="list">
+                  <div v-for="(item, index) in globalRules.release_groups_include" :key="`gr-rg-inc-${index}`" class="list-item">
+                    <input v-model="globalRules.release_groups_include[index]" placeholder="Release group" />
+                    <button class="ghost small" @click="removeListItem(globalRules.release_groups_include, index)">Remove</button>
+                  </div>
+                  <button class="ghost small" @click="addListItem(globalRules.release_groups_include)">Add include</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>Release groups exclude</label>
+                <div class="list">
+                  <div v-for="(item, index) in globalRules.release_groups_exclude" :key="`gr-rg-ex-${index}`" class="list-item">
+                    <input v-model="globalRules.release_groups_exclude[index]" placeholder="Release group" />
+                    <button class="ghost small" @click="removeListItem(globalRules.release_groups_exclude, index)">Remove</button>
+                  </div>
+                  <button class="ghost small" @click="addListItem(globalRules.release_groups_exclude)">Add exclude</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-header">
+              <h3>Tracker Rules</h3>
+              <button class="ghost small" @click="addTracker">Add tracker</button>
+            </div>
+            <div v-if="trackers.length === 0" class="empty-state">
+              No tracker-specific rules yet. Add one to target specific indexers.
+            </div>
+            <div v-for="(tracker, trackerIndex) in trackers" :key="`tracker-${trackerIndex}`" class="tracker-card">
+              <div class="tracker-header">
+                <div class="field">
+                  <label>Tracker name</label>
+                  <input v-model="tracker.name" placeholder="e.g. private-tracker" />
+                </div>
+                <button class="ghost small" @click="removeTracker(trackerIndex)">Remove</button>
+              </div>
+              <div class="field">
+                <label>Match patterns</label>
+                <p class="helper">Examples: MyTracker, MyTracker*, /.*anime.*/</p>
+                <div class="list">
+                  <div v-for="(item, index) in tracker.match" :key="`tracker-${trackerIndex}-match-${index}`" class="list-item">
+                    <input v-model="tracker.match[index]" placeholder="Match pattern" />
+                    <button class="ghost small" @click="removeListItem(tracker.match, index)">Remove</button>
+                  </div>
+                  <button class="ghost small" @click="addListItem(tracker.match)">Add match</button>
+                </div>
+              </div>
+              <div class="grid">
+                <div class="field">
+                  <label>Prefix</label>
+                  <input v-model="tracker.rules.prefix" placeholder="[TAG] " />
+                </div>
+                <div class="field">
+                  <label>Suffix</label>
+                  <input v-model="tracker.rules.suffix" placeholder=" [HD]" />
+                </div>
+                <div class="field">
+                  <label>Score validation policy</label>
+                  <select v-model="tracker.rules.score_validation_policy">
+                    <option value="block">Block on decrease</option>
+                    <option value="warn">Warn only</option>
+                  </select>
+                </div>
+                <div class="field toggle">
+                  <label>Validate custom format score</label>
+                  <input type="checkbox" v-model="tracker.rules.validate_custom_format_score" />
+                </div>
+              </div>
+              <div class="grid">
+                <div class="field">
+                  <label>Qualities include</label>
+                  <div class="list">
+                    <div v-for="(item, index) in tracker.rules.qualities_include" :key="`tracker-${trackerIndex}-qinc-${index}`" class="list-item">
+                      <input v-model="tracker.rules.qualities_include[index]" placeholder="Quality pattern" />
+                      <button class="ghost small" @click="removeListItem(tracker.rules.qualities_include, index)">Remove</button>
+                    </div>
+                    <button class="ghost small" @click="addListItem(tracker.rules.qualities_include)">Add include</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Qualities exclude</label>
+                  <div class="list">
+                    <div v-for="(item, index) in tracker.rules.qualities_exclude" :key="`tracker-${trackerIndex}-qex-${index}`" class="list-item">
+                      <input v-model="tracker.rules.qualities_exclude[index]" placeholder="Quality pattern" />
+                      <button class="ghost small" @click="removeListItem(tracker.rules.qualities_exclude, index)">Remove</button>
+                    </div>
+                    <button class="ghost small" @click="addListItem(tracker.rules.qualities_exclude)">Add exclude</button>
+                  </div>
+                </div>
+              </div>
+              <div class="field">
+                <label>Remove patterns</label>
+                <div class="list">
+                  <div v-for="(item, index) in tracker.rules.remove_patterns" :key="`tracker-${trackerIndex}-remove-${index}`" class="list-item">
+                    <input v-model="tracker.rules.remove_patterns[index]" placeholder="Pattern" />
+                    <button class="ghost small" @click="removeListItem(tracker.rules.remove_patterns, index)">Remove</button>
+                  </div>
+                  <button class="ghost small" @click="addListItem(tracker.rules.remove_patterns)">Add pattern</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>Replace patterns</label>
+                <div class="list">
+                  <div v-for="(item, index) in tracker.rules.replace_patterns" :key="`tracker-${trackerIndex}-replace-${index}`" class="list-item two-col">
+                    <input v-model="item.pattern" placeholder="Pattern" />
+                    <input v-model="item.replacement" placeholder="Replacement" />
+                    <button class="ghost small" @click="removeReplaceItem(tracker.rules.replace_patterns, index)">Remove</button>
+                  </div>
+                  <button class="ghost small" @click="addReplaceItem(tracker.rules.replace_patterns)">Add replacement</button>
+                </div>
+              </div>
+            </div>
+          </div>
           <div class="toolbar">
             <button class="primary" @click="saveRules" :disabled="isSaving">
               {{ isSaving ? "Saving..." : "Save & Reload" }}
@@ -104,6 +369,7 @@
     </div>
 
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://unpkg.com/js-yaml@4/dist/js-yaml.min.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
