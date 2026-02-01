@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     # Config file path
     rules_file: str = Field(default="/config/rename_rules.yaml")
 
+    # Web UI security
+    ui_api_key: str | None = Field(default=None)
+
     model_config = ConfigDict(env_prefix="", case_sensitive=False)
 
 

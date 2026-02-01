@@ -39,6 +39,10 @@ nano config/rename_rules.yaml
 docker-compose up -d
 ```
 
+### 3. Open the Web UI (optional)
+
+Navigate to `http://localhost:8000/ui/` to edit `rename_rules.yaml` in your browser. If you set `UI_API_KEY`, enter it in the UI settings panel or send it as `X-API-Key` for API requests.
+
 ### 3. Configure Sonarr/Radarr
 
 **In Radarr:**
@@ -78,6 +82,7 @@ docker-compose up -d
 | `SONARR_API_KEY` | `null` | Sonarr API key (Settings → General) |
 | `RADARR_URL` | `null` | Radarr API URL (for score validation) |
 | `RADARR_API_KEY` | `null` | Radarr API key (Settings → General) |
+| `UI_API_KEY` | `null` | Optional API key that protects the web UI config endpoints |
 
 ### Rename Modes
 

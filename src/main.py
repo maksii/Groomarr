@@ -4,14 +4,28 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, Request
-from fastapi.responses import JSONResponse
+import yaml
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import __version__, config
 from .arrapi import ArrClient
 from .config import TrackerRules, reload_rules, settings, setup_logging
 from .models import (
+    ConfigFileRequest,
+    ConfigFileResponse,
     FileRenamePreview,
     FindTorrentRequest,
     FindTorrentResponse,
@@ -272,6 +286,92 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+webui_dir = Path(__file__).resolve().parent / "webui"
+if webui_dir.exists():
+    app.mount("/ui", StaticFiles(directory=webui_dir, html=True), name="ui")
+
+
+def require_ui_api_key(
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> None:
+    """Enforce API key security for UI endpoints when configured."""
+    if not settings.ui_api_key:
+        return
+
+    token = x_api_key
+    if not token and authorization:
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            token = parts[1]
+
+    if token != settings.ui_api_key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+
+def _get_rules_path() -> Path:
+    return Path(settings.rules_file)
+
+
+def _get_rules_example_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "config" / "rename_rules.yaml.example"
+
+
+def _load_rules_yaml() -> str:
+    rules_path = _get_rules_path()
+    if rules_path.exists():
+        return rules_path.read_text(encoding="utf-8")
+
+    example_path = _get_rules_example_path()
+    if example_path.exists():
+        return example_path.read_text(encoding="utf-8")
+
+    return ""
+
+
+def _write_rules_yaml(content: str) -> None:
+    rules_path = _get_rules_path()
+    rules_path.parent.mkdir(parents=True, exist_ok=True)
+    rules_path.write_text(content, encoding="utf-8")
+
+
+@app.get("/", response_model=None)
+async def root() -> Response:
+    """Redirect to the web UI when available."""
+    if webui_dir.exists():
+        return RedirectResponse(url="/ui/")
+    return JSONResponse({"status": "ok", "message": "Groomarr API"})
+
+
+@app.get(
+    "/api/config/rename-rules",
+    response_model=ConfigFileResponse,
+    dependencies=[Depends(require_ui_api_key)],
+)
+async def get_rename_rules() -> ConfigFileResponse:
+    """Return the current rename rules YAML."""
+    return ConfigFileResponse(path=str(_get_rules_path()), yaml=_load_rules_yaml())
+
+
+@app.post(
+    "/api/config/rename-rules",
+    response_model=ConfigFileResponse,
+    dependencies=[Depends(require_ui_api_key)],
+)
+async def update_rename_rules(payload: ConfigFileRequest) -> ConfigFileResponse:
+    """Update rename rules YAML and reload configuration."""
+    try:
+        yaml.safe_load(payload.yaml)
+    except yaml.YAMLError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid YAML: {exc}",
+        ) from exc
+
+    _write_rules_yaml(payload.yaml)
+    reload_rules()
+    return ConfigFileResponse(path=str(_get_rules_path()), yaml=payload.yaml)
+
 
 # =============================================================================
 # Background Task Processing
@@ -477,7 +577,7 @@ async def health():
     return response
 
 
-@app.get("/reload")
+@app.get("/reload", dependencies=[Depends(require_ui_api_key)])
 async def reload_config():
     """Reload rename rules from file."""
     reload_rules()

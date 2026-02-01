@@ -129,6 +129,19 @@ class WebhookResponse(BaseModel):
     torrent_hash: str | None = None
 
 
+class ConfigFileResponse(BaseModel):
+    """Response model for config file contents."""
+
+    path: str
+    yaml: str
+
+
+class ConfigFileRequest(BaseModel):
+    """Request model for config file updates."""
+
+    yaml: str = Field(..., description="YAML content for rename_rules.yaml")
+
+
 # =============================================================================
 # Manual Rename Models
 # =============================================================================

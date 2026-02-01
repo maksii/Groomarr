@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Groomarr Config</title>
+    <link rel="icon" href="assets/logo-mark.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Sora:wght@600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <div class="brand">
+          <div class="brand-logo">
+            <img class="brand-mark" src="assets/logo-mark.svg" alt="Groomarr logo" />
+            <img class="brand-wordmark" src="assets/logo-text.svg" alt="Groomarr" />
+          </div>
+          <div>
+            <h1>Configuration Console</h1>
+            <p>Edit rename_rules.yaml and apply changes instantly.</p>
+          </div>
+        </div>
+        <button class="ghost" @click="toggleTheme">
+          {{ themeLabel }}
+        </button>
+      </header>
+
+      <main class="panel">
+        <section class="card">
+          <div class="card-header">
+            <h2>Rules Editor</h2>
+            <span class="pill">Live config</span>
+          </div>
+          <textarea
+            class="editor"
+            v-model="rulesYaml"
+            spellcheck="false"
+            aria-label="Rename rules YAML"
+          ></textarea>
+          <div class="toolbar">
+            <button class="primary" @click="saveRules" :disabled="isSaving">
+              {{ isSaving ? "Saving..." : "Save & Reload" }}
+            </button>
+            <button class="ghost" @click="loadRules" :disabled="isLoading">
+              {{ isLoading ? "Refreshing..." : "Reload from disk" }}
+            </button>
+            <span class="status">
+              <strong>Path:</strong> {{ rulesPath || "Unknown" }}
+            </span>
+          </div>
+          <div class="meta">
+            <div>
+              <span class="badge" :class="statusClass">{{ statusText }}</span>
+            </div>
+            <div v-if="lastUpdated">
+              Last updated: {{ lastUpdated }}
+            </div>
+            <div v-if="errorMessage" class="badge error">
+              {{ errorMessage }}
+            </div>
+          </div>
+        </section>
+
+        <aside class="card">
+          <div class="card-header">
+            <h2>Connection</h2>
+            <span class="pill">Secure access</span>
+          </div>
+          <div class="field">
+            <label for="api-key">API Key (optional)</label>
+            <input
+              id="api-key"
+              type="password"
+              v-model="apiKey"
+              placeholder="Set if UI_API_KEY is configured"
+            />
+          </div>
+          <div class="field">
+            <label for="theme-select">Theme</label>
+            <select id="theme-select" v-model="theme" @change="applyTheme">
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </div>
+          <button class="ghost" @click="persistSettings">Save settings</button>
+          <div class="meta">
+            <div>Use the API key header when UI_API_KEY is set.</div>
+            <div>Changes are written directly to rename_rules.yaml.</div>
+            <div class="badge" v-if="theme === 'dark'">Dark-first palette</div>
+          </div>
+        </aside>
+      </main>
+
+      <div class="footer">
+        <img src="assets/logo-lockup.svg" alt="Groomarr logo with text" />
+        <div>Groomarr Web UI</div>
+      </div>
+    </div>
+
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

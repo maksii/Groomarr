@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
+COPY config/rename_rules.yaml.example ./config/rename_rules.yaml.example
 
 # Create config directory
 RUN mkdir -p /config
@@ -26,6 +27,7 @@ ENV LOG_FORMAT=text
 ENV RENAME_MODE=torrent_and_folder
 ENV DRY_RUN=false
 ENV RULES_FILE=/config/rename_rules.yaml
+ENV UI_API_KEY=
 
 EXPOSE 8000
 

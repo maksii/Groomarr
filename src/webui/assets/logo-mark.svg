@@ -1,0 +1,49 @@
+<svg width="180" height="180" viewBox="0 0 180 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="groomarrGradient" x1="18" y1="22" x2="162" y2="158" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4ACFEB" />
+      <stop offset="1" stop-color="#8A5CD2" />
+    </linearGradient>
+    <linearGradient id="sparkleGradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EAF0FF" />
+      <stop offset="1" stop-color="#C7D2F1" />
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="156" height="156" rx="36" fill="#0B1220" />
+  <g>
+    <path
+      d="M62 53C62 42.954 70.954 34 81 34H109C119.046 34 128 42.954 128 53V71C128 74.314 125.314 77 122 77H118C114.686 77 112 74.314 112 71V55C112 50.582 108.418 47 104 47H86C81.582 47 78 50.582 78 55V62H62V53Z"
+      fill="url(#groomarrGradient)"
+    />
+    <path
+      d="M52 72C52 67.582 55.582 64 60 64H127C140.807 64 152 75.193 152 89C152 102.807 140.807 114 127 114H82C76.477 114 72 118.477 72 124V124C72 129.523 76.477 134 82 134H120"
+      stroke="url(#groomarrGradient)"
+      stroke-width="14"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M40 104C40 94.059 48.059 86 58 86H102"
+      stroke="url(#groomarrGradient)"
+      stroke-width="14"
+      stroke-linecap="round"
+    />
+    <path
+      d="M34 122C34 112.059 42.059 104 52 104H94"
+      stroke="url(#groomarrGradient)"
+      stroke-width="14"
+      stroke-linecap="round"
+    />
+    <path
+      d="M30 140C30 132.268 36.268 126 44 126H82"
+      stroke="url(#groomarrGradient)"
+      stroke-width="14"
+      stroke-linecap="round"
+    />
+  </g>
+  <g fill="url(#sparkleGradient)">
+    <path d="M132 32L136 40L144 42L136 44L132 52L128 44L120 42L128 40L132 32Z" />
+    <path d="M148 76L150 81L156 83L150 85L148 90L146 85L140 83L146 81L148 76Z" />
+    <path d="M38 56L40 60L46 62L40 64L38 68L36 64L30 62L36 60L38 56Z" />
+  </g>
+</svg>

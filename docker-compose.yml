@@ -19,6 +19,9 @@ services:
       
       # Optional - Dry Run (test rules without making changes)
       # - DRY_RUN=true
+
+      # Optional - UI API Key (protects /reload and config endpoints)
+      # - UI_API_KEY=changeme
       
       # Optional - Timing (usually defaults are fine)
       - INITIAL_DELAY=2

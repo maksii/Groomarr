@@ -1,0 +1,57 @@
+<svg width="520" height="140" viewBox="0 0 520 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="lockupGradient" x1="18" y1="18" x2="200" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4ACFEB" />
+      <stop offset="1" stop-color="#8A5CD2" />
+    </linearGradient>
+    <linearGradient id="lockupText" x1="0" y1="0" x2="520" y2="140" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4ACFEB" />
+      <stop offset="1" stop-color="#8A5CD2" />
+    </linearGradient>
+    <linearGradient id="lockupSparkle" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EAF0FF" />
+      <stop offset="1" stop-color="#C7D2F1" />
+    </linearGradient>
+  </defs>
+  <rect x="10" y="10" width="120" height="120" rx="28" fill="#0B1220" />
+  <g>
+    <path
+      d="M52 46C52 38.268 58.268 32 66 32H88C95.732 32 102 38.268 102 46V58C102 60.209 100.209 62 98 62H94C91.791 62 90 60.209 90 58V48C90 44.686 87.314 42 84 42H70C66.686 42 64 44.686 64 48V54H52V46Z"
+      fill="url(#lockupGradient)"
+    />
+    <path
+      d="M44 62C44 58.686 46.686 56 50 56H101C111.493 56 120 64.507 120 75C120 85.493 111.493 94 101 94H68C64.134 94 61 97.134 61 101C61 104.866 64.134 108 68 108H96"
+      stroke="url(#lockupGradient)"
+      stroke-width="10"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M36 86C36 79.373 41.373 74 48 74H78"
+      stroke="url(#lockupGradient)"
+      stroke-width="10"
+      stroke-linecap="round"
+    />
+    <path
+      d="M32 102C32 95.373 37.373 90 44 90H70"
+      stroke="url(#lockupGradient)"
+      stroke-width="10"
+      stroke-linecap="round"
+    />
+  </g>
+  <g fill="url(#lockupSparkle)">
+    <path d="M112 26L114 31L119 33L114 35L112 40L110 35L105 33L110 31L112 26Z" />
+    <path d="M130 60L132 64L137 66L132 68L130 72L128 68L123 66L128 64L130 60Z" />
+  </g>
+  <text
+    x="160"
+    y="88"
+    font-family="Sora, Inter, sans-serif"
+    font-size="64"
+    font-weight="700"
+    fill="url(#lockupText)"
+    letter-spacing="-1"
+  >
+    Groomarr
+  </text>
+</svg>
