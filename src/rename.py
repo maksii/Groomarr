@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from .config import TrackerRules
@@ -33,7 +33,7 @@ class RenameResult:
         return self.files_renamed + self.files_failed + self.files_skipped
 
 
-class RenameMode(str, Enum):
+class RenameMode(StrEnum):
     """Available rename modes."""
 
     TORRENT_ONLY = "torrent_only"
