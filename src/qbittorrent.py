@@ -127,7 +127,7 @@ class QBitClient:
 
                 if torrents:
                     torrent = torrents[0]
-                    logger.debug(
+                    logger.info(
                         "Found torrent %s... name='%s' state=%s",
                         hash_short,
                         torrent.name,
