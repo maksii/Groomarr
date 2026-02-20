@@ -56,6 +56,27 @@ def matches_indexer(indexer: str, patterns: list[str]) -> bool:
     return False
 
 
+def validate_regex_list(patterns: list[str], field_name: str) -> list[str]:
+    """Validate regex pattern strings used by trigger filters.
+
+    Compiles each regex and collects errors for invalid expressions.
+
+    Args:
+        patterns: Regex patterns to validate.
+        field_name: Configuration field name for error context.
+
+    Returns:
+        List of validation error messages. Empty when all patterns are valid.
+    """
+    errors: list[str] = []
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            errors.append(f"{field_name}: invalid regex '{pattern}': {exc}")
+    return errors
+
+
 class Settings(BaseSettings):
     """Application settings from environment variables."""
 
@@ -168,6 +189,29 @@ class TrackerRules:
         rules.score_validation_policy = data.get("score_validation_policy") or "block"
 
         return rules
+
+    def validate(self) -> list[str]:
+        """Validate trigger filter patterns for a rule set.
+
+        Verifies configured include/exclude regex lists are syntactically valid.
+
+        Returns:
+            List of validation errors. Empty when all patterns are valid.
+        """
+        errors: list[str] = []
+        errors.extend(validate_regex_list(self.indexers_include, "indexers_include"))
+        errors.extend(validate_regex_list(self.indexers_exclude, "indexers_exclude"))
+        errors.extend(validate_regex_list(self.qualities_include, "qualities_include"))
+        errors.extend(validate_regex_list(self.qualities_exclude, "qualities_exclude"))
+        errors.extend(
+            validate_regex_list(self.download_clients_include, "download_clients_include")
+        )
+        errors.extend(
+            validate_regex_list(self.download_clients_exclude, "download_clients_exclude")
+        )
+        errors.extend(validate_regex_list(self.release_groups_include, "release_groups_include"))
+        errors.extend(validate_regex_list(self.release_groups_exclude, "release_groups_exclude"))
+        return errors
 
     def has_trigger_filters(self) -> bool:
         """Check if any trigger filters are configured."""
@@ -325,6 +369,13 @@ class RenameRules:
 
         except Exception as e:
             config.config_error = str(e)
+            return config
+
+        errors = config._validate_config()
+        if errors:
+            config.config_error = "; ".join(errors[:3])
+            config.global_rules = TrackerRules()
+            config.trackers = []
 
         return config
 
@@ -357,6 +408,20 @@ class RenameRules:
             )
         else:
             logger.debug("Loaded config in hierarchical format (global only, no trackers)")
+
+    def _validate_config(self) -> list[str]:
+        """Validate all loaded rename configuration sections.
+
+        Runs validation for global rules and each tracker-specific rule set.
+
+        Returns:
+            List of validation errors found across the configuration.
+        """
+        errors = self.global_rules.validate()
+        for tracker in self.trackers:
+            tracker_errors = tracker.rules.validate()
+            errors.extend([f"tracker '{tracker.name}': {err}" for err in tracker_errors])
+        return errors
 
     def get_rules_for_indexer(self, indexer: str) -> tuple[TrackerRules, str | None]:
         """Get the appropriate rules for an indexer.

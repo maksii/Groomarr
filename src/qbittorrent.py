@@ -34,7 +34,8 @@ class QBitClient:
         self.password = password
         self.api_delay = api_delay
         self._client: Client | None = None
-        self._last_operation_time: float = 0
+        self._last_operation_time: float = 0.0
+        self._rate_limit_lock = asyncio.Lock()
 
     def _get_client(self) -> Client:
         """Get or create qBittorrent client with lazy connection."""
@@ -73,20 +74,24 @@ class QBitClient:
             return False
 
     async def _apply_rate_limit(self) -> None:
-        """Apply rate limiting between API operations.
+        """Apply operation spacing for qBittorrent API calls.
 
-        Ensures minimum delay between consecutive API calls to prevent
-        silent failures when qBittorrent can't keep up with rapid requests.
+        Enforces a minimum delay between requests and serializes timestamp
+        updates to keep throttling behavior deterministic under concurrency.
 
-        Uses asyncio.sleep() to avoid blocking the event loop.
+        Returns:
+            None.
         """
         if self.api_delay <= 0:
             return
 
-        elapsed = time.time() - self._last_operation_time
-        if elapsed < self.api_delay:
-            await asyncio.sleep(self.api_delay - elapsed)
-        self._last_operation_time = time.time()
+        async with self._rate_limit_lock:
+            now = time.monotonic()
+            elapsed = now - self._last_operation_time
+            if elapsed < self.api_delay:
+                await asyncio.sleep(self.api_delay - elapsed)
+                now = time.monotonic()
+            self._last_operation_time = now
 
     async def wait_for_torrent(
         self,
@@ -122,19 +127,25 @@ class QBitClient:
 
                 if torrents:
                     torrent = torrents[0]
-                    logger.info(
-                        f"Found torrent {hash_short}... name='{torrent.name}' state={torrent.state}"
+                    logger.debug(
+                        "Found torrent %s... name='%s' state=%s",
+                        hash_short,
+                        torrent.name,
+                        torrent.state,
                     )
                     return torrent
 
                 logger.debug(
-                    f"Torrent {hash_short}... not found, attempt {attempt + 1}/{max_retries}"
+                    "Torrent %s... not found, attempt %s/%s", hash_short, attempt + 1, max_retries
                 )
 
             except Exception as e:
                 logger.warning(
-                    f"Error checking for torrent {hash_short}...: {e}, "
-                    f"attempt {attempt + 1}/{max_retries}"
+                    "Error checking for torrent %s...: %s, attempt %s/%s",
+                    hash_short,
+                    e,
+                    attempt + 1,
+                    max_retries,
                 )
 
             if attempt < max_retries - 1:
@@ -145,7 +156,7 @@ class QBitClient:
                     delay = retry_delay
                 await asyncio.sleep(delay)
 
-        logger.warning(f"Torrent {hash_short}... not found after {max_retries} attempts")
+        logger.warning("Torrent %s... not found after %s attempts", hash_short, max_retries)
         return None
 
     def get_torrent_info(self, torrent_hash: str) -> dict[str, Any] | None:
