@@ -1,11 +1,12 @@
 """FastAPI application for Groomarr webhook service."""
 
-import json
+import inspect
 import logging
 import re
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from . import __version__, config
@@ -43,14 +44,33 @@ sonarr_client: ArrClient | None = None
 radarr_client: ArrClient | None = None
 
 
+async def _check_arr_connected(client: ArrClient) -> bool:
+    """Check Arr API connectivity for sync and async client implementations.
+
+    Uses async connectivity checks when available and falls back to a
+    threadpool-wrapped synchronous check for compatibility.
+
+    Args:
+        client: Arr API client instance.
+
+    Returns:
+        True when the Arr API is reachable, otherwise False.
+    """
+    check_async = getattr(client, "check_connection_async", None)
+    if callable(check_async) and inspect.iscoroutinefunction(check_async):
+        return await check_async()
+
+    return await run_in_threadpool(client.check_connection)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     global qbit_client, sonarr_client, radarr_client
 
-    logger.info(f"Starting Groomarr service v{__version__}")
-    logger.info(f"qBittorrent URL: {settings.qbittorrent_url}")
-    logger.info(f"Rename mode: {settings.rename_mode}")
+    logger.info("Starting Groomarr service v%s", __version__)
+    logger.info("qBittorrent URL: %s", settings.qbittorrent_url)
+    logger.info("Rename mode: %s", settings.rename_mode)
     if settings.dry_run:
         logger.warning("DRY RUN MODE ENABLED - no actual renames will be performed")
 
@@ -72,10 +92,10 @@ async def lifespan(app: FastAPI):
             api_key=settings.sonarr_api_key,
             app_type="sonarr",
         )
-        if sonarr_client.check_connection():
-            logger.info(f"Sonarr API connected: {settings.sonarr_url}")
+        if await _check_arr_connected(sonarr_client):
+            logger.info("Sonarr API connected: %s", settings.sonarr_url)
         else:
-            logger.warning(f"Sonarr API not reachable: {settings.sonarr_url}")
+            logger.warning("Sonarr API not reachable: %s", settings.sonarr_url)
     else:
         logger.info("Sonarr API not configured (SONARR_URL/SONARR_API_KEY)")
 
@@ -86,16 +106,16 @@ async def lifespan(app: FastAPI):
             api_key=settings.radarr_api_key,
             app_type="radarr",
         )
-        if radarr_client.check_connection():
-            logger.info(f"Radarr API connected: {settings.radarr_url}")
+        if await _check_arr_connected(radarr_client):
+            logger.info("Radarr API connected: %s", settings.radarr_url)
         else:
-            logger.warning(f"Radarr API not reachable: {settings.radarr_url}")
+            logger.warning("Radarr API not reachable: %s", settings.radarr_url)
     else:
         logger.info("Radarr API not configured (RADARR_URL/RADARR_API_KEY)")
 
     # Log score validation state
     if config.rules.validate_custom_format_score:
-        logger.info(f"Score validation enabled (policy: {config.rules.score_validation_policy})")
+        logger.info("Score validation enabled (policy: %s)", config.rules.score_validation_policy)
     else:
         logger.info("Score validation disabled")
 
@@ -144,74 +164,37 @@ def _log_payload_diagnostics(source: str, payload: dict):
     present = [f for f in expected_fields if f in payload]
     missing = [f for f in expected_fields if f not in payload]
 
-    logger.debug(f"[{source}] Payload keys received: {list(payload.keys())}")
+    logger.debug("[%s] Payload keys received: %s", source, list(payload.keys()))
 
     if missing:
-        logger.info(f"[{source}] Missing expected fields: {', '.join(missing)}")
+        logger.info("[%s] Missing expected fields: %s", source, ", ".join(missing))
     if present:
-        logger.debug(f"[{source}] Present expected fields: {', '.join(present)}")
+        logger.debug("[%s] Present expected fields: %s", source, ", ".join(present))
 
     # Log specific useful info if available
     if "eventType" in payload:
-        logger.debug(f"[{source}] Event type: {payload['eventType']}")
+        logger.debug("[%s] Event type: %s", source, payload["eventType"])
 
     if "movie" in payload and isinstance(payload["movie"], dict):
         movie = payload["movie"]
-        logger.debug(f"[{source}] Movie: {movie.get('title', 'unknown')}")
+        logger.debug("[%s] Movie: %s", source, movie.get("title", "unknown"))
 
     if "series" in payload and isinstance(payload["series"], dict):
         series = payload["series"]
-        logger.debug(f"[{source}] Series: {series.get('title', 'unknown')}")
+        logger.debug("[%s] Series: %s", source, series.get("title", "unknown"))
 
     if "release" in payload and isinstance(payload["release"], dict):
         release = payload["release"]
         release_title = release.get("releaseTitle") or release.get("title", "unknown")
-        logger.debug(f"[{source}] Release: {release_title[:80]}...")
+        logger.debug("[%s] Release: %s...", source, release_title[:80])
 
     if "downloadId" in payload:
         did = payload["downloadId"]
         hash_preview = did[:8] if did else "empty"
-        logger.debug(f"[{source}] Download ID: {hash_preview}...")
+        logger.debug("[%s] Download ID: %s...", source, hash_preview)
 
     if "downloadClientType" in payload:
-        logger.debug(f"[{source}] Download client type: {payload['downloadClientType']}")
-
-
-def _log_full_payload(source: str, payload: dict):
-    """Log the complete payload structure for debugging purposes.
-
-    This is useful for discovering the structure of webhooks from new sources
-    like Prowlarr.
-
-    Args:
-        source: Source application (prowlarr)
-        payload: Raw JSON payload dictionary
-    """
-    logger.info(f"[{source}] ===== Received webhook payload =====")
-    logger.info(f"[{source}] Payload keys: {list(payload.keys())}")
-
-    # Log the entire payload as formatted JSON
-    try:
-        payload_json = json.dumps(payload, indent=2, ensure_ascii=False)
-        logger.info(f"[{source}] Full payload structure:\n{payload_json}")
-    except Exception as e:
-        logger.warning(f"[{source}] Failed to serialize payload as JSON: {e}")
-        logger.info(f"[{source}] Payload type: {type(payload)}, value: {payload}")
-
-    # Log specific fields if they exist (help identify structure)
-    if "eventType" in payload:
-        logger.info(f"[{source}] Event type: {payload['eventType']}")
-
-    if "indexerId" in payload:
-        logger.info(f"[{source}] Indexer ID: {payload['indexerId']}")
-
-    if "indexer" in payload:
-        logger.info(f"[{source}] Indexer: {payload['indexer']}")
-
-    if "release" in payload:
-        logger.info(f"[{source}] Release information present: {type(payload['release'])}")
-
-    logger.info(f"[{source}] ===== End of payload =====")
+        logger.debug("[%s] Download client type: %s", source, payload["downloadClientType"])
 
 
 def _log_config_state():
@@ -453,9 +436,9 @@ async def health():
 
     Returns service status including qBittorrent and Arr API connectivity.
     """
-    qbit_connected = qbit_client.check_connection() if qbit_client else False
-    sonarr_connected = sonarr_client.check_connection() if sonarr_client else None
-    radarr_connected = radarr_client.check_connection() if radarr_client else None
+    qbit_connected = await run_in_threadpool(qbit_client.check_connection) if qbit_client else False
+    sonarr_connected = await _check_arr_connected(sonarr_client) if sonarr_client else None
+    radarr_connected = await _check_arr_connected(radarr_client) if radarr_client else None
 
     # Build response
     response = {
@@ -988,38 +971,6 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
     return WebhookResponse(
         status="queued",
         torrent_hash=download_id,
-    )
-
-
-@app.post("/webhook/prowlarr", response_model=WebhookResponse)
-async def prowlarr_webhook(request: Request):
-    """Handle Prowlarr webhook for testing and debugging.
-
-    This endpoint accepts any JSON payload from Prowlarr and logs the complete
-    structure for debugging purposes. Unlike Sonarr/Radarr endpoints, this does
-    not perform any renaming operations - it's purely for payload inspection.
-
-    Configure in Prowlarr: Settings -> Connect -> Webhook
-    - URL: http://groomarr:8000/webhook/prowlarr
-    - Events: Any events you want to test
-    """
-    # Parse raw JSON - accept any valid JSON payload
-    try:
-        raw_payload = await request.json()
-    except Exception as e:
-        logger.error(f"[prowlarr] Failed to parse JSON payload: {e}")
-        return WebhookResponse(status="error", reason="Invalid JSON payload")
-
-    # Log the complete payload structure for debugging
-    _log_full_payload("prowlarr", raw_payload)
-
-    # Extract event type if available
-    event_type = raw_payload.get("eventType", raw_payload.get("event", "unknown"))
-    logger.info(f"[prowlarr] Webhook received successfully (event type: {event_type})")
-
-    return WebhookResponse(
-        status="ok",
-        reason=f"Payload received and logged for debugging (event type: {event_type})",
     )
 
 

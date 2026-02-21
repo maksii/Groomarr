@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from .config import TrackerRules
@@ -33,7 +33,7 @@ class RenameResult:
         return self.files_renamed + self.files_failed + self.files_skipped
 
 
-class RenameMode(str, Enum):
+class RenameMode(StrEnum):
     """Available rename modes."""
 
     TORRENT_ONLY = "torrent_only"
@@ -49,18 +49,27 @@ class RenameMode(str, Enum):
 
 
 def matches_any(value: str, patterns: list[str]) -> bool:
-    """Check if value matches any regex pattern (case-insensitive).
+    """Match a value against configured regex patterns.
+
+    Evaluates each pattern case-insensitively and skips malformed regex entries.
 
     Args:
-        value: String to check
-        patterns: List of regex patterns
+        value: Input value to test.
+        patterns: Regex patterns to check.
 
     Returns:
-        True if value matches any pattern
+        True if any valid pattern matches, otherwise False.
     """
     if not patterns:
         return False
-    return any(re.search(p, value, re.IGNORECASE) for p in patterns)
+
+    for pattern in patterns:
+        try:
+            if re.search(pattern, value, re.IGNORECASE):
+                return True
+        except re.error as exc:
+            logger.warning("Invalid regex pattern '%s': %s", pattern, exc)
+    return False
 
 
 def should_process(payload: RadarrWebhook | SonarrWebhook, rules: TrackerRules) -> tuple[bool, str]:
