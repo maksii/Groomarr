@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .config import regex_match_body
+
 # =============================================================================
 # Radarr Models
 # =============================================================================
@@ -347,10 +349,11 @@ class TrackerConfigModel(BaseModel):
     @classmethod
     def _validate_match(cls, v: list[str]) -> list[str]:
         for pattern in v:
-            # Only /regex/ forms are compiled; exact and glob always parse.
-            if pattern.startswith("/") and pattern.endswith("/") and len(pattern) > 2:
+            # Only /regex/ (or /regex/i) forms are compiled; exact and glob always parse.
+            body = regex_match_body(pattern)
+            if body is not None:
                 try:
-                    re.compile(pattern[1:-1])
+                    re.compile(body)
                 except re.error as e:
                     raise ValueError(f"invalid regex match '{pattern}': {e}") from e
         return v

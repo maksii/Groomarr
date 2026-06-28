@@ -1079,6 +1079,18 @@ class TestMatchesIndexer:
         assert matches_indexer("TrackerA-Prowlarr", ["/TrackerA.*API/"]) is False
         assert matches_indexer("UTOPIA (API)-experimental", ["/UTOPIA.*experimental/"]) is True
 
+    def test_regex_match_with_trailing_i_flag(self):
+        """A trailing /i flag is accepted (matching is always case-insensitive).
+
+        The UI documents the ``/.*anime.*/i`` form, so a pattern ending in ``/i``
+        must be treated as a regex — not silently fall through to exact match.
+        """
+        assert matches_indexer("Nyaa (Prowlarr)", ["/.*anime.*/i"]) is False
+        assert matches_indexer("AniDex (Prowlarr)", ["/.*anidex.*/i"]) is True
+        assert matches_indexer("FreshIndexer (Prowlarr)", ["/freshindexer/i"]) is True
+        # Same expression without the flag still works and stays case-insensitive.
+        assert matches_indexer("freshindexer", ["/FreshIndexer/"]) is True
+
     def test_multiple_patterns(self):
         """Test matching against multiple patterns."""
         patterns = ["TrackerA*", "TrackerB*", "/Public.*/"]

@@ -26,7 +26,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from . import __version__, config
-from .config import TrackerRules
+from .config import TrackerRules, regex_match_body
 from .models import (
     ConfigMeta,
     RulesConfig,
@@ -309,9 +309,10 @@ async def validate_pattern(req: ValidatePatternRequest) -> ValidatePatternRespon
             return ValidatePatternResponse(valid=False, kind="regex", error=str(e))
 
     # kind == "match" — mirror config.matches_indexer interpretation
-    if pattern.startswith("/") and pattern.endswith("/") and len(pattern) > 2:
+    body = regex_match_body(pattern)
+    if body is not None:
         try:
-            re.compile(pattern[1:-1])
+            re.compile(body)
             return ValidatePatternResponse(valid=True, kind="match", interpreted="regex")
         except re.error as e:
             return ValidatePatternResponse(

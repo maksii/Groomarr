@@ -15,13 +15,26 @@ from pydantic_settings import BaseSettings
 logger = logging.getLogger(__name__)
 
 
+def regex_match_body(pattern: str) -> str | None:
+    """Return the inner expression if ``pattern`` is a ``/regex/`` indexer match.
+
+    Accepts ``/regex/`` and ``/regex/i``. Indexer matching is always
+    case-insensitive, so the trailing ``i`` flag is accepted and ignored — this
+    keeps a habitual ``/foo/i`` from silently falling through to an exact match
+    (which would never fire). Returns ``None`` when the pattern is not a
+    slash-delimited regex form.
+    """
+    m = re.fullmatch(r"/(.+)/i?", pattern)
+    return m.group(1) if m else None
+
+
 def matches_indexer(indexer: str, patterns: list[str]) -> bool:
     """Check if indexer matches any pattern.
 
     Pattern types:
     - Plain string: exact match (case-insensitive)
     - Contains * or ?: wildcard/glob match
-    - Wrapped in /.../ : regex match
+    - Wrapped in /.../ or /.../i : regex match (always case-insensitive)
 
     Args:
         indexer: Indexer name to check
@@ -31,18 +44,18 @@ def matches_indexer(indexer: str, patterns: list[str]) -> bool:
         True if indexer matches any pattern
     """
     for pattern in patterns:
-        # Regex pattern: /pattern/
-        if pattern.startswith("/") and pattern.endswith("/") and len(pattern) > 2:
-            regex = pattern[1:-1]
+        # Regex pattern: /pattern/ or /pattern/i
+        body = regex_match_body(pattern)
+        if body is not None:
             try:
-                if re.search(regex, indexer, re.IGNORECASE):
+                if re.search(body, indexer, re.IGNORECASE):
                     return True
             except re.error as e:
                 logger.warning(f"Invalid regex pattern '{pattern}': {e}")
-                continue
+            continue
 
         # Wildcard pattern: contains * or ?
-        elif "*" in pattern or "?" in pattern:
+        if "*" in pattern or "?" in pattern:
             # Convert glob to regex: * -> .*, ? -> .
             regex = re.escape(pattern).replace(r"\*", ".*").replace(r"\?", ".")
             try:
@@ -50,12 +63,11 @@ def matches_indexer(indexer: str, patterns: list[str]) -> bool:
                     return True
             except re.error as e:
                 logger.warning(f"Invalid wildcard pattern '{pattern}': {e}")
-                continue
+            continue
 
         # Exact match (case-insensitive)
-        else:
-            if pattern.lower() == indexer.lower():
-                return True
+        if pattern.lower() == indexer.lower():
+            return True
 
     return False
 
