@@ -926,6 +926,26 @@ def validate_rename_plan(
     if not files:
         return [], []
 
+    # Structure-aware handling for complex packs (multi-season / season+specials
+    # / collection). Imported lazily to avoid a circular import (structure
+    # builds on this module's episode helpers). Simple seasons and movies fall
+    # through to the unchanged logic below, so existing behaviour is preserved.
+    from .structure import analyze_torrent, build_complex_plan
+
+    layout = analyze_torrent(files)
+    if layout.is_complex:
+        return build_complex_plan(files, new_name, root_folder, preserve_folder, layout)
+
+    # Samples never participate in the rename plan: renaming a sample to the
+    # content's name would collapse it onto the real file (data loss), and
+    # Sonarr/Radarr ignore samples on import anyway. Exclude them up front so the
+    # simple path below plans only real content.
+    sample_paths = {m.path for m in layout.files if m.kind == "sample"}
+    if sample_paths:
+        files = [f for f in files if f.get("name", "") not in sample_paths]
+        if not files:
+            return [], []
+
     warnings: list[str] = []
     rename_plan: list[tuple[str, str]] = []
 
@@ -1330,6 +1350,45 @@ async def perform_rename(
     if files_needing_rename:
         actions.append(f"{len(files_needing_rename)} files")
     logger.info(f"Torrent {hash_short}...: will rename {', '.join(actions)}")
+
+    # Final data-loss gate: never execute a file-rename plan that could destroy
+    # a file. This guards EVERY rename path (simple and complex) — it rejects a
+    # plan where two files collapse onto one target or a target would clobber a
+    # bystander, and refuses cyclic plans rather than risk a partial swap. The
+    # gate runs before any file/folder mutation, so a rejected plan changes
+    # nothing on disk (the torrent display-name rename below is cosmetic).
+    if files_needing_rename:
+        from .structure import order_moves_safely, partition_safe_moves
+
+        current_paths_now = {f.get("name", "") for f in files}
+        # Drop only the individual moves that would destroy data (collapse onto
+        # a shared name, or clobber a bystander); keep every provably-safe move.
+        safe_moves, dropped = partition_safe_moves(files_needing_rename, current_paths_now)
+        for old_path, _new, reason in dropped:
+            logger.warning(
+                f"Torrent {hash_short}...: leaving '{old_path.rsplit('/', 1)[-1]}' "
+                f"unchanged to prevent data loss ({reason})"
+            )
+            result.files_skipped += 1
+
+        # Order the safe moves so none writes over a path still pending as a
+        # source. A residual cycle (practically impossible with clean target
+        # names) is also left unchanged rather than risk a partial swap.
+        ordered, staged = order_moves_safely(safe_moves)
+        if staged:
+            cyclic = {o for o, _ in staged}
+            for old_path in cyclic:
+                logger.warning(
+                    f"Torrent {hash_short}...: leaving '{old_path.rsplit('/', 1)[-1]}' "
+                    f"unchanged (cyclic rename)"
+                )
+                result.files_skipped += 1
+            safe_moves = [(o, n) for o, n in safe_moves if o not in cyclic]
+            ordered, _ = order_moves_safely(safe_moves)
+
+        files_needing_rename = ordered
+        # Verification must only expect the moves we actually execute.
+        rename_plan = ordered
 
     # Rename torrent display name first (this doesn't affect file paths)
     if torrent_needs_rename:
