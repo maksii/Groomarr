@@ -17,18 +17,29 @@ Security notes:
 """
 
 import asyncio
+import json
 import logging
 import multiprocessing as mp
 import re
+from datetime import UTC, datetime
 from urllib.parse import urlparse, urlunparse
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
-from . import __version__, config
+from . import __version__, config, history
 from .config import TrackerRules, regex_match_body
 from .models import (
     ConfigMeta,
+    LiveTorrentState,
+    OperationDetail,
+    OperationListResponse,
+    OperationStats,
+    OperationSummary,
+    RollbackPreviewResponse,
+    RollbackResponse,
+    RollbackSkip,
+    RollbackStepView,
     RulesConfig,
     RuleSet,
     SettingsView,
@@ -41,6 +52,8 @@ from .models import (
     ValidatePatternRequest,
     ValidatePatternResponse,
 )
+from .rename import get_root_folder
+from .rollback import RollbackPlan, build_rollback_plan, perform_rollback
 from .simulate_worker import _worker
 
 logger = logging.getLogger(__name__)
@@ -436,4 +449,300 @@ async def get_status() -> StatusView:
         config_found=rr.config_found,
         config_error=rr.config_error,
         readonly=config.settings.config_readonly,
+    )
+
+
+# =============================================================================
+# Operation history (dashboard) endpoints
+# =============================================================================
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _parse_json(value, default):
+    """Decode a JSON column, falling back to ``default`` on any error."""
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _extract_applied(
+    row: dict,
+) -> tuple[tuple[str, str] | None, tuple[str, str] | None, list[tuple[str, str]]]:
+    """Pull the executed forward plan out of a record's ``applied_json``."""
+    applied = _parse_json(row.get("applied_json"), {}) or {}
+    t = applied.get("torrent")
+    f = applied.get("folder")
+    files = applied.get("files") or []
+    applied_torrent = (t[0], t[1]) if isinstance(t, list) and len(t) == 2 else None
+    applied_folder = (f[0], f[1]) if isinstance(f, list) and len(f) == 2 else None
+    applied_files = [(p[0], p[1]) for p in files if isinstance(p, list) and len(p) == 2]
+    return applied_torrent, applied_folder, applied_files
+
+
+async def _live_state(torrent_hash: str) -> LiveTorrentState:
+    """Fetch the torrent's CURRENT state from qBittorrent (full file list, no cap)."""
+    from . import main  # lazy import to avoid a circular import at module load
+
+    qbit = main.qbit_client
+    if qbit is None:
+        return LiveTorrentState(checked=False, note="qBittorrent is not connected.")
+    if not torrent_hash:
+        return LiveTorrentState(
+            checked=True, torrent_exists=False, note="No torrent hash recorded."
+        )
+
+    torrent = await run_in_threadpool(qbit.get_torrent_info, torrent_hash)
+    if not torrent:
+        return LiveTorrentState(
+            checked=True, torrent_exists=False, note="Torrent is no longer in qBittorrent."
+        )
+    files = await run_in_threadpool(qbit.get_files, torrent_hash)
+    names = [f.get("name", "") for f in files if f.get("name")]
+    root = get_root_folder(files)
+    name = torrent.get("name", "") if hasattr(torrent, "get") else getattr(torrent, "name", "")
+    return LiveTorrentState(
+        checked=True,
+        torrent_exists=True,
+        torrent_name=name or None,
+        root_folder=root,
+        files=names,
+    )
+
+
+@router.get("/operations", response_model=OperationListResponse)
+async def list_operations(
+    q: str | None = None,
+    source: str | None = None,
+    status: str | None = None,
+    decision: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> OperationListResponse:
+    """Search / filter / paginate the operations log (newest first)."""
+    page = await run_in_threadpool(
+        history.list_operations,
+        q=q,
+        source=source,
+        status=status,
+        decision=decision,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
+    )
+    return OperationListResponse(
+        items=[OperationSummary(**row) for row in page["items"]],
+        total=page["total"],
+        limit=page["limit"],
+        offset=page["offset"],
+    )
+
+
+@router.get("/operations/stats", response_model=OperationStats)
+async def operations_stats() -> OperationStats:
+    """KPI aggregates for the dashboard header."""
+    data = await run_in_threadpool(history.stats)
+    return OperationStats(**data)
+
+
+@router.get("/operations/{op_id}", response_model=OperationDetail)
+async def get_operation(op_id: int) -> OperationDetail:
+    """Full record for one operation: decision, rule trace, rename plan + LIVE state."""
+    row = await run_in_threadpool(history.get_operation, op_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Operation not found.")
+
+    live = await _live_state(row.get("torrent_hash") or "")
+
+    # Does the torrent still carry the name Groomarr gave it?
+    if live.torrent_exists and row.get("new_name"):
+        live.matches_rename = live.torrent_name == row["new_name"]
+    # Truncate the live file list for the response (rollback uses the full list).
+    if len(live.files) > 500:
+        live.files = live.files[:500]
+        live.note = (live.note + " (file list truncated to 500)").strip()
+
+    applied_t, applied_f, applied_files = _extract_applied(row)
+    has_applied = bool(applied_t or applied_f or applied_files)
+    if bool(row.get("rolled_back")):
+        can_rollback, reason = False, "This operation has already been rolled back."
+    elif row.get("status") != "renamed" or not has_applied:
+        can_rollback, reason = False, "There is no executed rename to roll back."
+    elif live.checked and not live.torrent_exists:
+        can_rollback, reason = False, "The torrent is no longer in qBittorrent."
+    elif not live.checked:
+        can_rollback, reason = False, "qBittorrent is not connected."
+    else:
+        can_rollback, reason = True, ""
+
+    detail = OperationDetail(
+        **row,
+        rule_steps=_parse_json(row.get("rule_steps_json"), []),
+        trigger_checks=_parse_json(row.get("trigger_checks_json"), []),
+        file_changes=_parse_json(row.get("file_plan_json"), []),
+        live=live,
+        can_rollback=can_rollback,
+        rollback_unavailable_reason=reason,
+    )
+    return detail
+
+
+def _plan_to_preview(op_id: int, plan: RollbackPlan) -> RollbackPreviewResponse:
+    """Serialize a RollbackPlan into the preview response model."""
+
+    def step(s):
+        return RollbackStepView(kind=s.kind, frm=s.frm, to=s.to) if s else None
+
+    return RollbackPreviewResponse(
+        status="ok" if plan.can_rollback else "unavailable",
+        operation_id=op_id,
+        torrent_exists=plan.torrent_exists,
+        can_rollback=plan.can_rollback,
+        reason=plan.reason,
+        torrent_step=step(plan.torrent_step),
+        folder_step=step(plan.folder_step),
+        file_steps=[RollbackStepView(kind=s.kind, frm=s.frm, to=s.to) for s in plan.file_steps],
+        skipped=[RollbackSkip(**s) for s in plan.skipped],
+        warnings=plan.warnings,
+    )
+
+
+async def _plan_rollback(row: dict) -> RollbackPlan:
+    """Build a validated rollback plan for a recorded operation against live state."""
+    live = await _live_state(row.get("torrent_hash") or "")
+    applied_t, applied_f, applied_files = _extract_applied(row)
+    return build_rollback_plan(
+        torrent_hash=row.get("torrent_hash") or "",
+        applied_torrent=applied_t,
+        applied_folder=applied_f,
+        applied_files=applied_files,
+        live_torrent_name=live.torrent_name if live.torrent_exists else None,
+        live_files=live.files,
+        live_root_folder=live.root_folder,
+    )
+
+
+@router.post("/operations/{op_id}/rollback/preview", response_model=RollbackPreviewResponse)
+async def rollback_preview(op_id: int) -> RollbackPreviewResponse:
+    """Compute what a rollback would do, validated against current live state. Read-only."""
+    from . import main
+
+    row = await run_in_threadpool(history.get_operation, op_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Operation not found.")
+    if bool(row.get("rolled_back")):
+        return RollbackPreviewResponse(
+            status="unavailable",
+            operation_id=op_id,
+            can_rollback=False,
+            reason="This operation has already been rolled back.",
+        )
+    if main.qbit_client is None:
+        return RollbackPreviewResponse(
+            status="error", operation_id=op_id, reason="qBittorrent is not connected."
+        )
+    plan = await _plan_rollback(row)
+    return _plan_to_preview(op_id, plan)
+
+
+@router.post("/operations/{op_id}/rollback", response_model=RollbackResponse)
+async def rollback_operation(op_id: int) -> RollbackResponse:
+    """Safely reverse a recorded rename, restoring the original names.
+
+    Validated against live state and the data-loss safety gate (see
+    :mod:`src.rollback`). Records the rollback as its own operation and links it
+    back to the original. Available whenever the manual-rename tool is (the
+    service's existing no-auth, network-trust posture).
+    """
+    from . import main
+
+    row = await run_in_threadpool(history.get_operation, op_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Operation not found.")
+    if bool(row.get("rolled_back")):
+        return RollbackResponse(
+            status="unavailable",
+            operation_id=op_id,
+            reason="This operation has already been rolled back.",
+        )
+    qbit = main.qbit_client
+    if qbit is None:
+        return RollbackResponse(
+            status="error", operation_id=op_id, reason="qBittorrent is not connected."
+        )
+
+    plan = await _plan_rollback(row)
+    files_skipped = sum(1 for s in plan.skipped if s.get("kind") == "file")
+    if not plan.can_rollback:
+        return RollbackResponse(
+            status="unavailable" if plan.torrent_exists else "error",
+            operation_id=op_id,
+            reason=plan.reason,
+            files_skipped=files_skipped,
+        )
+
+    result = await perform_rollback(qbit, plan)
+    reverted_any = result.torrent_reverted or result.folder_reverted or result.files_reverted > 0
+    if result.success and reverted_any:
+        status = "success"
+    elif reverted_any:
+        status = "partial"
+    else:
+        status = "error"
+
+    # Record the rollback as its own operation, linked to the original.
+    rb_applied = {
+        "torrent": [plan.torrent_step.frm, plan.torrent_step.to] if plan.torrent_step else None,
+        "folder": [plan.folder_step.frm, plan.folder_step.to] if plan.folder_step else None,
+        "files": [[s.frm, s.to] for s in plan.file_steps],
+    }
+    rb_file_plan = [{"old_path": s.frm, "new_path": s.to, "changed": True} for s in plan.file_steps]
+    rb_id = await run_in_threadpool(
+        history.record_operation,
+        source="manual",
+        event_type="rollback",
+        status="rolled_back" if status == "success" else "failed",
+        decision="processed",
+        rollback_of=op_id,
+        torrent_hash=row.get("torrent_hash") or "",
+        media_title=f"Rollback of #{op_id}: {row.get('media_title') or ''}".strip(),
+        old_name=plan.torrent_step.frm if plan.torrent_step else row.get("new_name") or "",
+        new_name=plan.torrent_step.to if plan.torrent_step else row.get("old_name") or "",
+        folder_old=plan.folder_step.frm if plan.folder_step else None,
+        folder_new=plan.folder_step.to if plan.folder_step else None,
+        applied_json=rb_applied,
+        file_plan_json=rb_file_plan,
+        files_renamed=result.files_reverted,
+        files_failed=result.files_failed,
+        files_skipped=result.files_skipped,
+        error="; ".join(result.errors) if result.errors else "",
+    )
+
+    # Mark the original: fully reverted -> flagged + status flips so the dashboard
+    # shows it as rolled back; a partial revert stays rollback-able for a retry.
+    update_fields = {"rollback_op": rb_id}
+    if status == "success":
+        update_fields.update(rolled_back=True, rolled_back_at=_now_iso(), status="rolled_back")
+    await run_in_threadpool(history.update_operation, op_id, **update_fields)
+
+    return RollbackResponse(
+        status=status,
+        operation_id=op_id,
+        rollback_operation_id=rb_id,
+        torrent_reverted=result.torrent_reverted,
+        folder_reverted=result.folder_reverted,
+        files_reverted=result.files_reverted,
+        files_failed=result.files_failed,
+        files_skipped=result.files_skipped,
+        steps=result.steps,
+        errors=result.errors,
+        reason="" if status == "success" else "; ".join(result.errors) or plan.reason,
     )

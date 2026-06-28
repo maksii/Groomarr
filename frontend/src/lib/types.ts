@@ -216,6 +216,137 @@ export function emptyTracker(): TrackerConfig {
   return { name: "", match: [], rules: emptyRuleSet() };
 }
 
+// ---- Operation history (dashboard) ----
+
+export interface OperationSummary {
+  id: number;
+  created_at: string;
+  updated_at: string;
+  source: string;
+  event_type: string;
+  status: string;
+  decision: string;
+  skip_reason: string;
+  media_title: string;
+  release_title: string;
+  indexer: string;
+  tracker_name: string | null;
+  used_global: boolean;
+  torrent_hash: string;
+  old_name: string;
+  new_name: string;
+  layout_kind: string;
+  files_renamed: number;
+  files_total: number;
+  dry_run: boolean;
+  rolled_back: boolean;
+  rollback_of: number | null;
+}
+
+export interface OperationListResponse {
+  items: OperationSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface OperationStats {
+  total: number;
+  last_24h: number;
+  renamed: number;
+  skipped: number;
+  failed: number;
+  rolled_back: number;
+  by_status: Record<string, number>;
+  by_source: Record<string, number>;
+  last_operation_at: string | null;
+}
+
+export interface OperationFileChange {
+  old_path: string;
+  new_path: string;
+  changed: boolean;
+}
+
+export interface LiveTorrentState {
+  checked: boolean;
+  torrent_exists: boolean;
+  torrent_name: string | null;
+  root_folder: string | null;
+  files: string[];
+  matches_rename: boolean;
+  note: string;
+}
+
+export interface OperationDetail extends OperationSummary {
+  download_client: string;
+  quality: string;
+  release_group: string;
+  rename_mode: string;
+  folder_old: string | null;
+  folder_new: string | null;
+  error: string;
+  rolled_back_at: string | null;
+  rollback_op: number | null;
+  rule_steps: SimulateStep[];
+  trigger_checks: FilterCheck[];
+  file_changes: OperationFileChange[];
+  live: LiveTorrentState | null;
+  can_rollback: boolean;
+  rollback_unavailable_reason: string;
+}
+
+export interface RollbackStepView {
+  kind: string;
+  frm: string;
+  to: string;
+}
+
+export interface RollbackSkip {
+  kind: string;
+  frm: string;
+  to: string;
+  reason: string;
+}
+
+export interface RollbackPreviewResponse {
+  status: string;
+  operation_id: number;
+  torrent_exists: boolean;
+  can_rollback: boolean;
+  reason: string;
+  torrent_step: RollbackStepView | null;
+  folder_step: RollbackStepView | null;
+  file_steps: RollbackStepView[];
+  skipped: RollbackSkip[];
+  warnings: string[];
+}
+
+export interface RollbackResponse {
+  status: string;
+  operation_id: number;
+  rollback_operation_id: number | null;
+  torrent_reverted: boolean;
+  folder_reverted: boolean;
+  files_reverted: number;
+  files_failed: number;
+  files_skipped: number;
+  steps: string[];
+  errors: string[];
+  reason: string;
+}
+
+export interface OperationListParams {
+  q?: string;
+  source?: string;
+  status?: string;
+  decision?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  offset?: number;
+}
+
 export function exampleSampleRelease(): SimulateRelease {
   // A realistic, high-value scenario: the tracker gives a clean, complete release
   // title, but the downloaded folder/files are badly named. Groomarr renames the

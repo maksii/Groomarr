@@ -5,6 +5,7 @@ import { AppShell } from "@/components/layout/AppShell";
 import { buttonClasses } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider, useTheme } from "@/hooks/useTheme";
+import { DashboardPage } from "@/pages/DashboardPage";
 import { RulesPage } from "@/pages/RulesPage";
 import { StatusPage } from "@/pages/StatusPage";
 import { ToolsPage } from "@/pages/ToolsPage";
@@ -21,7 +22,7 @@ function NotFound() {
     <div className="flex flex-col items-center gap-4 py-24 text-center">
       <h1 className="text-2xl font-semibold">Page not found</h1>
       <Link to="/" className={buttonClasses("primary", "md")}>
-        Back to Rules
+        Back to dashboard
       </Link>
     </div>
   );
@@ -32,8 +33,9 @@ const router = createBrowserRouter([
     path: "/",
     element: <AppShell />,
     children: [
-      { index: true, element: <RulesPage /> },
-      { path: "simulator", element: <Navigate to="/" replace /> },
+      { index: true, element: <DashboardPage /> },
+      { path: "rules", element: <RulesPage /> },
+      { path: "simulator", element: <Navigate to="/rules" replace /> },
       { path: "tools", element: <ToolsPage /> },
       { path: "status", element: <StatusPage /> },
       { path: "*", element: <NotFound /> },

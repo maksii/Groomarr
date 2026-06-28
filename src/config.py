@@ -112,6 +112,14 @@ class Settings(BaseSettings):
     # Config file path
     rules_file: str = Field(default="/config/rename_rules.yaml")
 
+    # Operation history (dashboard audit log).
+    # Path to the SQLite database. Empty = stored beside the rules file (so a
+    # single mounted /config volume persists both across restarts).
+    history_db: str = Field(default="")
+    # Retention caps (0 = disabled). Pruned best-effort after each new record.
+    history_retention_days: int = Field(default=0)
+    history_retention_max_rows: int = Field(default=10000)
+
     # Web UI
     # Directory containing the built single-page app (index.html + assets).
     # In Docker this is populated by the frontend build stage.

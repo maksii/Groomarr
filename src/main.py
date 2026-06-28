@@ -1,6 +1,7 @@
 """FastAPI application for Groomarr webhook service."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -11,7 +12,7 @@ from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, config
+from . import __version__, config, history
 from .api import check_connection_async
 from .api import router as api_router
 from .arrapi import ArrClient
@@ -32,6 +33,8 @@ from .rename import (
     RenameConflictError,
     RenameMode,
     apply_rename_rules,
+    apply_rename_rules_traced,
+    explain_filters,
     get_root_folder,
     perform_rename,
     should_process,
@@ -61,6 +64,9 @@ async def lifespan(app: FastAPI):
 
     # Log config file state
     _log_config_state()
+
+    # Initialize the operation history store (best-effort; never blocks startup)
+    history.init_db()
 
     # Initialize qBittorrent client
     qbit_client = QBitClient(
@@ -346,6 +352,93 @@ async def security_middleware(request: Request, call_next):
 # =============================================================================
 
 
+def _decision_detail(
+    rules: TrackerRules,
+    *,
+    release_title: str,
+    indexer: str,
+    quality: str,
+    release_group: str,
+    custom_formats: list[str] | None,
+    custom_format_score: int | None,
+    download_client: str,
+) -> tuple[str, list[dict], list[dict]]:
+    """Compute the audit detail for a webhook: target name, rule trace, filter checks.
+
+    Uses the exact production engine (the same functions that drive the rename and
+    the simulator), so the recorded explanation matches real behavior. Never
+    raises — the audit log must never break webhook handling.
+    """
+    try:
+        checks = explain_filters(
+            rules,
+            indexer=indexer,
+            quality=quality,
+            release_group=release_group,
+            custom_formats=custom_formats,
+            custom_format_score=custom_format_score,
+            download_client=download_client,
+        )
+    except Exception:  # noqa: BLE001 - detail is best-effort
+        checks = []
+    try:
+        new_name, steps = apply_rename_rules_traced(release_title, rules)
+    except Exception:  # noqa: BLE001
+        new_name, steps = release_title, []
+    return new_name, steps, checks
+
+
+def _preview_file_plan(
+    files: list[dict], new_name: str, mode: RenameMode
+) -> tuple[list[dict], str | None, str | None]:
+    """Build a display-only file plan (used for dry-run records). Never raises.
+
+    Returns ``(file_plan, folder_old, folder_new)`` where file_plan is a list of
+    ``{old_path, new_path, changed}`` dicts. Mirrors the preview endpoint without
+    mutating anything.
+    """
+    try:
+        root_folder = get_root_folder(files)
+        folder_old = root_folder
+        folder_new = (
+            new_name
+            if root_folder
+            and mode
+            in (
+                RenameMode.TORRENT_AND_FOLDER,
+                RenameMode.TORRENT_FOLDER_FILES,
+                RenameMode.FOLDER_ONLY,
+            )
+            else root_folder
+        )
+        plan: list[dict] = []
+        if mode in (RenameMode.TORRENT_FOLDER_FILES, RenameMode.FILES_ONLY):
+            rename_plan, _warnings = validate_rename_plan(files, new_name, root_folder)
+            plan = [
+                {"old_path": old, "new_path": new, "changed": old != new}
+                for old, new in rename_plan
+            ]
+        return plan, folder_old, folder_new
+    except Exception:  # noqa: BLE001 - preview is best-effort
+        return [], None, None
+
+
+async def _record(**fields) -> int | None:
+    """Insert an operation record off the event loop. Never raises."""
+    try:
+        return await asyncio.to_thread(history.record_operation, **fields)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def _update(op_id: int | None, **fields) -> None:
+    """Update an operation record off the event loop. Never raises."""
+    if not op_id:
+        return
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(history.update_operation, op_id, **fields)
+
+
 async def _validate_rename_score(
     source: str,
     current_name: str,
@@ -430,6 +523,7 @@ async def process_rename_task(
     media_title: str,
     effective_rules: TrackerRules,
     tracker_name: str | None = None,
+    op_id: int | None = None,
 ):
     """Background task to process rename operation.
 
@@ -440,12 +534,14 @@ async def process_rename_task(
         media_title: Movie or series title for logging
         effective_rules: TrackerRules to use (global or tracker-specific)
         tracker_name: Name of matched tracker (None if using global rules)
+        op_id: History operation id to update as the task progresses (best-effort).
     """
     hash_short = torrent_hash[:8]
     rules_info = f"tracker '{tracker_name}'" if tracker_name else "global"
     logger.info(
         f"[{source}] Processing rename for '{media_title}' ({hash_short}...) using {rules_info}"
     )
+    await _update(op_id, status="processing")
 
     # Wait for torrent to appear in qBittorrent
     torrent = await qbit_client.wait_for_torrent(
@@ -457,7 +553,14 @@ async def process_rename_task(
 
     if not torrent:
         logger.warning(f"[{source}] Torrent {hash_short}... not found after waiting, giving up")
+        await _update(
+            op_id,
+            status="failed",
+            error="Torrent never appeared in qBittorrent (gave up after retries)",
+        )
         return
+
+    current_name = getattr(torrent, "name", "") or ""
 
     # Apply rename rules to get new name
     new_name = apply_rename_rules(release_title, effective_rules)
@@ -466,13 +569,20 @@ async def process_rename_task(
         logger.info(f"[{source}] No rename rules applied, using original title")
 
     logger.info(f"[{source}] Renaming to: '{new_name}'")
+    await _update(op_id, old_name=current_name, new_name=new_name)
 
     # Validate rename using Arr API (if enabled)
     # Compare current torrent name against proposed new name
     should_rename = await _validate_rename_score(
-        source, torrent.name, new_name, hash_short, effective_rules
+        source, current_name, new_name, hash_short, effective_rules
     )
     if not should_rename:
+        await _update(
+            op_id,
+            status="skipped",
+            decision="skipped",
+            skip_reason="rename blocked by custom-format score validation / Arr API check",
+        )
         return
 
     # Get rename mode
@@ -481,12 +591,32 @@ async def process_rename_task(
     except ValueError:
         logger.warning(f"Invalid rename mode '{settings.rename_mode}', using torrent_and_folder")
         mode = RenameMode.TORRENT_AND_FOLDER
+    await _update(op_id, rename_mode=mode.value)
 
     # Check for dry run mode
     if settings.dry_run:
         logger.info(
             f"[{source}] DRY RUN: Would rename '{media_title}' ({hash_short}...) "
             f"to '{new_name}' with mode={mode.value}"
+        )
+        # Record what WOULD have happened so the dashboard can show the preview.
+        files = await asyncio.to_thread(qbit_client.get_files, torrent_hash)
+        plan, folder_old, folder_new = _preview_file_plan(files, new_name, mode)
+        layout_kind = None
+        try:
+            from .structure import analyze_torrent
+
+            layout_kind = analyze_torrent(files).kind.value
+        except Exception:  # noqa: BLE001
+            layout_kind = None
+        await _update(
+            op_id,
+            status="dry_run",
+            file_plan_json=plan,
+            folder_old=folder_old,
+            folder_new=folder_new,
+            layout_kind=layout_kind,
+            files_total=len(files),
         )
         return
 
@@ -498,6 +628,9 @@ async def process_rename_task(
         mode=mode,
     )
 
+    # Record the executed plan + outcome for the audit log and rollback.
+    await _update(op_id, **_result_record_fields(result, current_name, new_name))
+
     if result.success:
         if result.already_complete:
             logger.info(f"[{source}] '{media_title}' ({hash_short}...) already renamed")
@@ -508,6 +641,46 @@ async def process_rename_task(
         if result.verification_errors:
             error_detail = f": {', '.join(result.verification_errors[:3])}"
         logger.error(f"[{source}] Failed to rename '{media_title}' ({hash_short}...){error_detail}")
+
+
+def _result_record_fields(result, fallback_old: str, target_new: str) -> dict:
+    """Translate a RenameResult into history columns (executed plan + outcome).
+
+    Pure/never raises so it is safe to call inline; the caller persists the dict.
+    """
+    if result.already_complete and result.success:
+        status = "no_change"
+    elif result.success:
+        status = "renamed"
+    else:
+        status = "failed"
+
+    applied = {
+        "torrent": list(result.applied_torrent_rename) if result.applied_torrent_rename else None,
+        "folder": list(result.applied_folder_rename) if result.applied_folder_rename else None,
+        "files": [[o, n] for o, n in result.applied_file_renames],
+    }
+    file_plan = [
+        {"old_path": o, "new_path": n, "changed": True} for o, n in result.applied_file_renames
+    ]
+    folder_old = result.applied_folder_rename[0] if result.applied_folder_rename else None
+    folder_new = result.applied_folder_rename[1] if result.applied_folder_rename else None
+    old_name = result.applied_torrent_rename[0] if result.applied_torrent_rename else fallback_old
+    return {
+        "status": status,
+        "old_name": old_name,
+        "new_name": target_new,
+        "folder_old": folder_old,
+        "folder_new": folder_new,
+        "layout_kind": result.layout_kind,
+        "applied_json": applied,
+        "file_plan_json": file_plan,
+        "files_renamed": result.files_renamed,
+        "files_failed": result.files_failed,
+        "files_skipped": result.files_skipped,
+        "files_total": result.total_files_processed,
+        "error": "; ".join(result.verification_errors[:3]) if result.verification_errors else "",
+    }
 
 
 # =============================================================================
@@ -590,11 +763,24 @@ async def manual_rename(request: ManualRenameRequest):
     torrent = await asyncio.to_thread(qbit_client.get_torrent_info, request.torrent_hash)
     if not torrent:
         logger.warning(f"[manual] Torrent {hash_short}... not found")
+        await _record(
+            source="manual",
+            event_type="manual",
+            status="failed",
+            decision="error",
+            torrent_hash=request.torrent_hash,
+            new_name=request.new_name,
+            mode=request.mode,
+            media_title=request.new_name,
+            error="Torrent not found",
+        )
         return ManualRenameResponse(
             status="error",
             torrent_hash=request.torrent_hash,
             reason="Torrent not found",
         )
+
+    current_name = torrent.get("name", "") or ""
 
     # Perform the rename
     result = await perform_rename(
@@ -602,6 +788,17 @@ async def manual_rename(request: ManualRenameRequest):
         torrent_hash=request.torrent_hash,
         new_name=request.new_name,
         mode=mode,
+    )
+
+    # Record the manual operation (executed plan + outcome) for the audit log.
+    await _record(
+        source="manual",
+        event_type="manual",
+        decision="processed",
+        torrent_hash=request.torrent_hash,
+        media_title=request.new_name,
+        rename_mode=request.mode,
+        **_result_record_fields(result, current_name, request.new_name),
     )
 
     if result.success:
@@ -869,6 +1066,13 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
     if event_type == "Test":
         logger.info("[radarr] Received test webhook - connection successful")
         _log_payload_diagnostics("radarr", raw_payload)
+        await _record(
+            source="radarr",
+            event_type="Test",
+            status="test",
+            decision="n/a",
+            media_title="Connection test",
+        )
         return WebhookResponse(status="ok", reason="Test webhook received successfully")
 
     # For non-test events, validate with Pydantic model
@@ -877,6 +1081,13 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
     except Exception as e:
         logger.error(f"[radarr] Payload validation failed: {e}")
         _log_payload_diagnostics("radarr", raw_payload)
+        await _record(
+            source="radarr",
+            event_type=event_type,
+            status="failed",
+            decision="error",
+            error="Invalid payload structure",
+        )
         return JSONResponse(
             status_code=422,
             content={"status": "error", "reason": "Invalid payload structure"},
@@ -889,12 +1100,27 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
         f"[radarr] Received webhook: {payload.eventType} for '{movie_title}' ({hash_short}...)"
     )
 
+    # Common fields recorded for every (non-test) Radarr webhook.
+    base = {
+        "source": "radarr",
+        "event_type": payload.eventType,
+        "media_title": movie_title,
+        "release_title": payload.release.releaseTitle,
+        "indexer": payload.release.indexer or "",
+        "quality": payload.release.quality or "",
+        "release_group": payload.release.releaseGroup or "",
+        "download_client": payload.downloadClient or "",
+        "torrent_hash": payload.downloadId or "",
+    }
+
     # Check event type
     if payload.eventType != "Grab":
         logger.info(f"[radarr] Skipping event type '{payload.eventType}' (not Grab)")
+        reason = f"event type '{payload.eventType}' not Grab"
+        await _record(**base, status="skipped", decision="skipped", skip_reason=reason)
         return WebhookResponse(
             status="skipped",
-            reason=f"event type '{payload.eventType}' not Grab",
+            reason=reason,
             torrent_hash=payload.downloadId,
         )
 
@@ -903,9 +1129,11 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
         logger.info(
             f"[radarr] Skipping download client '{payload.downloadClientType}' (not qBittorrent)"
         )
+        reason = f"download client '{payload.downloadClientType}' not qBittorrent"
+        await _record(**base, status="skipped", decision="skipped", skip_reason=reason)
         return WebhookResponse(
             status="skipped",
-            reason=f"download client '{payload.downloadClientType}' not qBittorrent",
+            reason=reason,
             torrent_hash=payload.downloadId,
         )
 
@@ -915,15 +1143,40 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
     rules_info = f"tracker '{tracker_name}'" if tracker_name else "global"
     logger.debug(f"[radarr] Using {rules_info} rules for indexer '{indexer}'")
 
+    new_name, steps, checks = _decision_detail(
+        effective_rules,
+        release_title=payload.release.releaseTitle,
+        indexer=indexer,
+        quality=payload.release.quality or "",
+        release_group=payload.release.releaseGroup or "",
+        custom_formats=payload.release.customFormats or [],
+        custom_format_score=payload.release.customFormatScore,
+        download_client=payload.downloadClient or "",
+    )
+    detail = {
+        "tracker_name": tracker_name,
+        "used_global": tracker_name is None,
+        "rename_mode": settings.rename_mode,
+        "dry_run": settings.dry_run,
+        "new_name": new_name,
+        "rule_steps_json": steps,
+        "trigger_checks_json": checks,
+    }
+
     # Apply trigger filters using the effective rules
     should_proc, skip_reason = should_process(payload, effective_rules)
     if not should_proc:
         logger.info(f"[radarr] Skipping {hash_short}...: {skip_reason}")
+        await _record(
+            **base, **detail, status="skipped", decision="skipped", skip_reason=skip_reason
+        )
         return WebhookResponse(
             status="skipped",
             reason=skip_reason,
             torrent_hash=payload.downloadId,
         )
+
+    op_id = await _record(**base, **detail, status="queued", decision="processed")
 
     # Queue background task with effective rules
     background_tasks.add_task(
@@ -934,6 +1187,7 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
         media_title=movie_title,
         effective_rules=effective_rules,
         tracker_name=tracker_name,
+        op_id=op_id,
     )
 
     logger.info(f"[radarr] Queued rename for '{movie_title}' ({hash_short}...) using {rules_info}")
@@ -964,6 +1218,13 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
     if event_type == "Test":
         logger.info("[sonarr] Received test webhook - connection successful")
         _log_payload_diagnostics("sonarr", raw_payload)
+        await _record(
+            source="sonarr",
+            event_type="Test",
+            status="test",
+            decision="n/a",
+            media_title="Connection test",
+        )
         return WebhookResponse(status="ok", reason="Test webhook received successfully")
 
     # For non-test events, validate with Pydantic model
@@ -972,6 +1233,13 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
     except Exception as e:
         logger.error(f"[sonarr] Payload validation failed: {e}")
         _log_payload_diagnostics("sonarr", raw_payload)
+        await _record(
+            source="sonarr",
+            event_type=event_type,
+            status="failed",
+            decision="error",
+            error="Invalid payload structure",
+        )
         return JSONResponse(
             status_code=422,
             content={"status": "error", "reason": "Invalid payload structure"},
@@ -995,12 +1263,27 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
         f"'{series_title}' {episode_info} ({hash_short}...)"
     )
 
+    media_title = f"{series_title} {episode_info}".strip()
+    base = {
+        "source": "sonarr",
+        "event_type": payload.eventType,
+        "media_title": media_title,
+        "release_title": payload.get_release_title(),
+        "indexer": payload.release.indexer or "",
+        "quality": payload.release.quality or "",
+        "release_group": payload.release.releaseGroup or "",
+        "download_client": payload.downloadClient or "",
+        "torrent_hash": download_id or "",
+    }
+
     # Check event type
     if payload.eventType != "Grab":
         logger.info(f"[sonarr] Skipping event type '{payload.eventType}' (not Grab)")
+        reason = f"event type '{payload.eventType}' not Grab"
+        await _record(**base, status="skipped", decision="skipped", skip_reason=reason)
         return WebhookResponse(
             status="skipped",
-            reason=f"event type '{payload.eventType}' not Grab",
+            reason=reason,
             torrent_hash=download_id,
         )
 
@@ -1009,15 +1292,20 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
         logger.info(
             f"[sonarr] Skipping download client '{payload.downloadClientType}' (not qBittorrent)"
         )
+        reason = f"download client '{payload.downloadClientType}' not qBittorrent"
+        await _record(**base, status="skipped", decision="skipped", skip_reason=reason)
         return WebhookResponse(
             status="skipped",
-            reason=f"download client '{payload.downloadClientType}' not qBittorrent",
+            reason=reason,
             torrent_hash=download_id,
         )
 
     # Check we have download ID
     if not download_id:
         logger.warning("[sonarr] No downloadId found in payload")
+        await _record(
+            **base, status="skipped", decision="skipped", skip_reason="no downloadId in payload"
+        )
         return WebhookResponse(
             status="skipped",
             reason="no downloadId in payload",
@@ -1029,18 +1317,43 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
     rules_info = f"tracker '{tracker_name}'" if tracker_name else "global"
     logger.debug(f"[sonarr] Using {rules_info} rules for indexer '{indexer}'")
 
+    # Get release title
+    release_title = payload.get_release_title()
+
+    new_name, steps, checks = _decision_detail(
+        effective_rules,
+        release_title=release_title,
+        indexer=indexer,
+        quality=payload.release.quality or "",
+        release_group=payload.release.releaseGroup or "",
+        custom_formats=payload.release.customFormats or [],
+        custom_format_score=payload.release.customFormatScore,
+        download_client=payload.downloadClient or "",
+    )
+    detail = {
+        "tracker_name": tracker_name,
+        "used_global": tracker_name is None,
+        "rename_mode": settings.rename_mode,
+        "dry_run": settings.dry_run,
+        "new_name": new_name,
+        "rule_steps_json": steps,
+        "trigger_checks_json": checks,
+    }
+
     # Apply trigger filters using the effective rules
     should_proc, skip_reason = should_process(payload, effective_rules)
     if not should_proc:
         logger.info(f"[sonarr] Skipping {hash_short}...: {skip_reason}")
+        await _record(
+            **base, **detail, status="skipped", decision="skipped", skip_reason=skip_reason
+        )
         return WebhookResponse(
             status="skipped",
             reason=skip_reason,
             torrent_hash=download_id,
         )
 
-    # Get release title
-    release_title = payload.get_release_title()
+    op_id = await _record(**base, **detail, status="queued", decision="processed")
 
     # Queue background task with effective rules
     background_tasks.add_task(
@@ -1048,9 +1361,10 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
         torrent_hash=download_id,
         release_title=release_title,
         source="sonarr",
-        media_title=f"{series_title} {episode_info}",
+        media_title=media_title,
         effective_rules=effective_rules,
         tracker_name=tracker_name,
+        op_id=op_id,
     )
 
     logger.info(
@@ -1088,6 +1402,14 @@ async def prowlarr_webhook(request: Request):
     # Extract event type if available
     event_type = raw_payload.get("eventType", raw_payload.get("event", "unknown"))
     logger.info(f"[prowlarr] Webhook received successfully (event type: {event_type})")
+
+    await _record(
+        source="prowlarr",
+        event_type=str(event_type),
+        status="received",
+        decision="n/a",
+        media_title="Prowlarr webhook (debug)",
+    )
 
     return WebhookResponse(
         status="ok",

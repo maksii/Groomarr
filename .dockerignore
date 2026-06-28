@@ -25,6 +25,8 @@ frontend/dist
 # Local config & artifacts
 config/rename_rules.yaml
 config/rename_rules.yaml.bak
+config/groomarr_history.db*
+groomarr_history.db*
 *.png
 .playwright-mcp
 
