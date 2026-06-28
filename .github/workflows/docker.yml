@@ -2,12 +2,14 @@ name: CI
 
 on:
   push:
+    # '**' matches branch names containing '/' (e.g. feat/foo); '*' does not.
     branches:
-      - '*'
+      - '**'
     paths-ignore:
-      - '.github/**'
       - '.*'
       - 'README.md'
+  # Allow building an image for any branch on demand from the Actions tab.
+  workflow_dispatch:
 
 # Minimal default permissions for the GITHUB_TOKEN (principle of least privilege).
 # Docker images are pushed to Docker Hub via username/token secrets, so the
@@ -37,11 +39,13 @@ jobs:
       - name: Determine Docker Tag
         id: set_docker_tag
         run: |
-          if [ "${{ github.ref }}" == "refs/heads/main" ]; then
-            echo "tag=latest" >> $GITHUB_OUTPUT
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
           else
-            BRANCH_NAME=$(echo ${{ github.ref }} | sed 's|refs/heads/||')
-            echo "tag=$BRANCH_NAME" >> $GITHUB_OUTPUT
+            # Docker tags cannot contain '/' (or other ref chars), so sanitize
+            # the branch name: feat/operations-dashboard -> feat-operations-dashboard
+            SAFE_TAG=$(echo "${{ github.ref_name }}" | sed 's#[^a-zA-Z0-9._-]#-#g')
+            echo "tag=$SAFE_TAG" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push
