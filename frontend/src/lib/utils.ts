@@ -30,3 +30,11 @@ export function clone<T>(value: T): T {
   if (typeof structuredClone === "function") return structuredClone(value);
   return JSON.parse(JSON.stringify(value)) as T;
 }
+
+/** Derive a representative sample file list from a release title, so the preview
+ *  can show how the folder + file would be renamed. */
+export function deriveSampleFiles(title: string): string[] {
+  const base = title.trim();
+  if (!base) return [];
+  return [`${base}/${base}.mkv`];
+}

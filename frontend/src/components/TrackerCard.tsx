@@ -1,8 +1,9 @@
-import { ArrowDown, ArrowUp, ChevronRight, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, Eye, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { TrackerConfig } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ChipListEditor } from "./ChipListEditor";
+import { FieldInfo } from "./FieldInfo";
 import { RuleSetEditor } from "./RuleSetEditor";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -18,10 +19,20 @@ interface Props {
   onChange: (next: TrackerConfig) => void;
   onRemove: () => void;
   onMove: (dir: -1 | 1) => void;
+  onPreview?: () => void;
   disabled?: boolean;
 }
 
-export function TrackerCard({ tracker, index, total, onChange, onRemove, onMove, disabled }: Props) {
+export function TrackerCard({
+  tracker,
+  index,
+  total,
+  onChange,
+  onRemove,
+  onMove,
+  onPreview,
+  disabled,
+}: Props) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -42,6 +53,19 @@ export function TrackerCard({ tracker, index, total, onChange, onRemove, onMove,
           {tracker.match.length === 0 ? <Badge tone="warning">no match — ignored</Badge> : null}
         </button>
         <div className="flex shrink-0 items-center gap-1">
+          {onPreview ? (
+            <Tooltip content="Preview this tracker (sets the sample indexer to match)">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onPreview}
+                aria-label="Preview this tracker"
+                className="text-muted-foreground hover:text-primary"
+              >
+                <Eye className="h-4 w-4" />
+              </Button>
+            </Tooltip>
+          ) : null}
           <Tooltip content="Move up">
             <Button
               variant="ghost"
@@ -83,7 +107,10 @@ export function TrackerCard({ tracker, index, total, onChange, onRemove, onMove,
         <div className="space-y-5 border-t border-border p-5">
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">
-              <Label>Name</Label>
+              <div className="flex items-center gap-1.5">
+                <Label>Name</Label>
+                <FieldInfo field="tracker_name" />
+              </div>
               <Input
                 value={tracker.name}
                 disabled={disabled}
@@ -92,7 +119,10 @@ export function TrackerCard({ tracker, index, total, onChange, onRemove, onMove,
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Match patterns</Label>
+              <div className="flex items-center gap-1.5">
+                <Label>Match patterns</Label>
+                <FieldInfo field="tracker_match" />
+              </div>
               <p className="text-xs text-muted-foreground">
                 Exact, <code>wildcard*</code>, or <code>/regex/</code>. First matching tracker wins.
               </p>

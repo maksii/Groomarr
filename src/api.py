@@ -35,6 +35,8 @@ from .models import (
     SimulateRequest,
     SimulateResponse,
     StatusView,
+    TorrentSampleRequest,
+    TorrentSampleResponse,
     TrackerConfigModel,
     ValidatePatternRequest,
     ValidatePatternResponse,
@@ -337,6 +339,48 @@ def _strip_userinfo(url: str) -> str:
     except ValueError:
         return ""
     return url
+
+
+@router.post("/torrent-sample", response_model=TorrentSampleResponse)
+async def torrent_sample(req: TorrentSampleRequest) -> TorrentSampleResponse:
+    """Load a real torrent's name + files to populate the preview's sample release.
+
+    Accepts a torrent hash (40 hex chars) or a tracker ID / URL (resolved via the
+    torrent's comment, like /find/torrent). Read-only.
+    """
+    from . import main  # lazy import to avoid a circular import at module load
+
+    qbit = main.qbit_client
+    if qbit is None:
+        return TorrentSampleResponse(status="error", reason="qBittorrent is not connected.")
+
+    query = req.query.strip()
+    thash: str | None = None
+    if re.fullmatch(r"[0-9a-fA-F]{40}", query):
+        thash = query
+    else:
+        match = re.search(r"/torrents/(\d+)", query)
+        tracker_id = match.group(1) if match else (query if query.isdigit() else None)
+        if tracker_id:
+            found = await run_in_threadpool(qbit.find_torrent_by_comment_id, tracker_id)
+            if found is not None:
+                thash = found.hash
+
+    if not thash:
+        return TorrentSampleResponse(
+            status="not_found", reason="No torrent found for that hash or tracker ID."
+        )
+
+    torrent = await run_in_threadpool(qbit.get_torrent_info, thash)
+    if not torrent:
+        return TorrentSampleResponse(status="not_found", reason="Torrent not found.")
+
+    files = await run_in_threadpool(qbit.get_files, thash)
+    return TorrentSampleResponse(
+        status="ok",
+        title=torrent.get("name", "") or "",
+        files=[f.get("name", "") for f in files if f.get("name")],
+    )
 
 
 @router.get("/settings", response_model=SettingsView)

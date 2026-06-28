@@ -401,6 +401,8 @@ class SimulateRelease(BaseModel):
     custom_formats: list[str] = Field(default_factory=list, max_length=100)
     custom_format_score: int | None = None
     download_client: str = Field(default="", max_length=200)
+    # Optional sample files to preview how individual files would be renamed.
+    files: list[str] = Field(default_factory=list, max_length=500)
 
 
 class SimulateRequest(BaseModel):
@@ -423,6 +425,16 @@ class SimulateStep(BaseModel):
     error: str | None = None
 
 
+class FilterCheck(BaseModel):
+    """One trigger-filter check in the simulation breakdown."""
+
+    label: str
+    tested: str
+    passed: bool
+    detail: str
+    blocking: bool = False
+
+
 class SimulateResponse(BaseModel):
     """Response for POST /api/rules/simulate."""
 
@@ -436,6 +448,27 @@ class SimulateResponse(BaseModel):
     changed: bool = False
     steps: list[SimulateStep] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    # Per-filter breakdown explaining the decision (incl. non-title filters)
+    trigger_checks: list[FilterCheck] = Field(default_factory=list)
+    # Preview of how sample files would be renamed
+    file_renames: list[FileRenamePreview] = Field(default_factory=list)
+    file_warnings: list[str] = Field(default_factory=list)
+    root_folder: str | None = None
+
+
+class TorrentSampleRequest(BaseModel):
+    """Request for POST /api/torrent-sample (load a real torrent into the preview)."""
+
+    query: str = Field(..., max_length=2000, description="Torrent hash, or tracker ID/URL")
+
+
+class TorrentSampleResponse(BaseModel):
+    """Response for POST /api/torrent-sample."""
+
+    status: str  # ok | not_found | error
+    title: str | None = None
+    files: list[str] = Field(default_factory=list)
+    reason: str | None = None
 
 
 class ValidatePatternRequest(BaseModel):

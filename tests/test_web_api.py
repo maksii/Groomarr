@@ -80,6 +80,20 @@ class TestEngineRefactors:
         ok, _reason = evaluate_filters(rules, quality="CAM")
         assert ok is True
 
+    def test_explain_filters_breakdown(self):
+        from src.config import TrackerRules
+        from src.rename import explain_filters
+
+        rules = TrackerRules.from_dict(
+            {"qualities_exclude": ["CAM"], "indexers_include": ["Nyaa.*"]}
+        )
+        checks = {c["label"]: c for c in explain_filters(rules, indexer="Nyaa-X", quality="CAM")}
+        assert checks["Indexer — include"]["passed"] is True
+        assert checks["Quality — exclude"]["passed"] is False
+        # Exactly one check (the first failure) is flagged as blocking
+        blocking = [c for c in checks.values() if c.get("blocking")]
+        assert len(blocking) == 1 and blocking[0]["label"] == "Quality — exclude"
+
     def test_evaluate_filters_matches_should_process(self):
         """should_process must delegate to evaluate_filters with identical results."""
         from src.config import TrackerRules
@@ -465,6 +479,40 @@ class TestSimulateEndpoint:
         assert elapsed < 20, f"simulate hung for {elapsed:.1f}s"
         assert r.json()["status"] == "error"
 
+    @pytest.mark.asyncio
+    async def test_returns_trigger_breakdown(self, client):
+        r = await client.post(
+            "/api/rules/simulate",
+            json={"release": {"release_title": "Movie CAM", "indexer": "X", "quality": "CAM"}},
+        )
+        d = r.json()
+        assert d["would_process"] is False
+        checks = d["trigger_checks"]
+        # The CAM quality-exclude check should be present, failed, and flagged blocking
+        assert any(
+            c["label"].startswith("Quality") and not c["passed"] and c["blocking"] for c in checks
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_file_renames(self, client):
+        r = await client.post(
+            "/api/rules/simulate",
+            json={
+                "release": {
+                    "release_title": "Nice.Movie.2024.1080p",
+                    "indexer": "X",
+                    "quality": "Bluray-1080p",
+                    "files": ["old.folder/old.movie.mkv"],
+                }
+            },
+        )
+        d = r.json()
+        assert d["status"] == "ok"
+        assert d["would_process"] is True
+        assert len(d["file_renames"]) == 1
+        assert d["file_renames"][0]["new_path"].endswith(".mkv")
+        assert "Nice.Movie.2024.1080p" in d["file_renames"][0]["new_path"]
+
 
 # =============================================================================
 # Validate-pattern / settings / status
@@ -616,6 +664,56 @@ def _app_with_rules(yaml_text: str, tmp_path):
         reload(main)
         main.qbit_client = _make_qbit_mock()
         yield main.app, rf
+
+
+class TestTorrentSample:
+    @pytest.mark.asyncio
+    async def test_load_by_hash(self, rules_file, tmp_path):
+        no_static = tmp_path / "ns"
+        with patch.dict(os.environ, _env(rules_file, no_static), clear=False):
+            from src import config
+
+            reload(config)
+            from src import main
+
+            reload(main)
+            m = MagicMock()
+            m.check_connection = MagicMock(return_value=True)
+            torrent = MagicMock()
+            torrent.get = MagicMock(
+                side_effect=lambda k, d=None: {"name": "Show.S01.Complete"}.get(k, d)
+            )
+            m.get_torrent_info = MagicMock(return_value=torrent)
+            m.get_files = MagicMock(return_value=[{"name": "Show.S01.Complete/Show.S01E01.mkv"}])
+            main.qbit_client = m
+            transport = ASGITransport(app=main.app)
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                r = await c.post("/api/torrent-sample", json={"query": "A" * 40})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["status"] == "ok"
+        assert d["title"] == "Show.S01.Complete"
+        assert d["files"] == ["Show.S01.Complete/Show.S01E01.mkv"]
+
+    @pytest.mark.asyncio
+    async def test_not_found(self, rules_file, tmp_path):
+        no_static = tmp_path / "ns"
+        with patch.dict(os.environ, _env(rules_file, no_static), clear=False):
+            from src import config
+
+            reload(config)
+            from src import main
+
+            reload(main)
+            m = MagicMock()
+            m.get_torrent_info = MagicMock(return_value=None)
+            m.find_torrent_by_comment_id = MagicMock(return_value=None)
+            main.qbit_client = m
+            transport = ASGITransport(app=main.app)
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                r = await c.post("/api/torrent-sample", json={"query": "999999"})
+        assert r.status_code == 200
+        assert r.json()["status"] == "not_found"
 
 
 class TestAuditRegressions:

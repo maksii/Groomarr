@@ -10,6 +10,7 @@ import type {
   SimulateRelease,
   SimulateResponse,
   StatusView,
+  TorrentSampleResponse,
   ValidatePatternResponse,
 } from "./types";
 
@@ -99,6 +100,12 @@ export const api = {
     request<ValidatePatternResponse>("/api/rules/validate-pattern", {
       method: "POST",
       body: JSON.stringify({ pattern, kind }),
+    }),
+
+  torrentSample: (query: string) =>
+    request<TorrentSampleResponse>("/api/torrent-sample", {
+      method: "POST",
+      body: JSON.stringify({ query }),
     }),
 
   getSettings: () => request<SettingsView>("/api/settings"),

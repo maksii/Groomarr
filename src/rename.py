@@ -148,6 +148,144 @@ def evaluate_filters(
     return True, ""
 
 
+def explain_filters(
+    rules: TrackerRules,
+    *,
+    indexer: str = "",
+    quality: str = "",
+    release_group: str = "",
+    custom_formats: list[str] | None = None,
+    custom_format_score: int | None = None,
+    download_client: str = "",
+) -> list[dict[str, Any]]:
+    """Produce a per-filter breakdown explaining the trigger decision.
+
+    Reports every *configured* filter and whether the release passes it, in the
+    same order ``evaluate_filters`` checks them (no short-circuit). Used by the UI
+    to show how each rule affects the decision — including non-title filters like
+    download client, custom formats, score, and exclude lists. The first failing
+    check is flagged as ``blocking`` (it matches the short-circuit skip reason).
+
+    Returns a list of dicts: {label, tested, passed, detail, blocking}.
+    """
+    cfs = custom_formats or []
+    checks: list[dict[str, Any]] = []
+
+    def add(label: str, tested: str, passed: bool, detail: str) -> None:
+        checks.append({"label": label, "tested": tested, "passed": passed, "detail": detail})
+
+    dc = download_client or ""
+    if rules.download_clients_include:
+        ok = matches_any(dc, rules.download_clients_include)
+        add(
+            "Download client — include",
+            dc or "(none)",
+            ok,
+            "matches an allowed pattern" if ok else "not in the include list",
+        )
+    if rules.download_clients_exclude:
+        hit = matches_any(dc, rules.download_clients_exclude)
+        add(
+            "Download client — exclude",
+            dc or "(none)",
+            not hit,
+            "matches an exclude pattern" if hit else "not excluded",
+        )
+
+    ix = indexer or ""
+    if rules.indexers_include:
+        ok = matches_any(ix, rules.indexers_include)
+        add(
+            "Indexer — include",
+            ix or "(none)",
+            ok,
+            "matches an allowed pattern" if ok else "not in the include list",
+        )
+    if rules.indexers_exclude:
+        hit = matches_any(ix, rules.indexers_exclude)
+        add(
+            "Indexer — exclude",
+            ix or "(none)",
+            not hit,
+            "matches an exclude pattern" if hit else "not excluded",
+        )
+
+    q = quality or ""
+    if rules.qualities_include:
+        ok = matches_any(q, rules.qualities_include)
+        add(
+            "Quality — include",
+            q or "(none)",
+            ok,
+            "matches an allowed pattern" if ok else "not in the include list",
+        )
+    if rules.qualities_exclude:
+        hit = matches_any(q, rules.qualities_exclude)
+        add(
+            "Quality — exclude",
+            q or "(none)",
+            not hit,
+            "matches an exclude pattern" if hit else "not excluded",
+        )
+
+    grp = release_group or ""
+    if rules.release_groups_include:
+        # Mirror evaluate_filters: an empty release group passes the include check.
+        ok = (not grp) or matches_any(grp, rules.release_groups_include)
+        add(
+            "Release group — include",
+            grp or "(none)",
+            ok,
+            "matches an allowed pattern" if ok else "not in the include list",
+        )
+    if rules.release_groups_exclude:
+        hit = bool(grp) and matches_any(grp, rules.release_groups_exclude)
+        add(
+            "Release group — exclude",
+            grp or "(none)",
+            not hit,
+            "matches an exclude pattern" if hit else "not excluded",
+        )
+
+    if rules.customformats_require_any:
+        present = [cf for cf in rules.customformats_require_any if cf in cfs]
+        ok = bool(present)
+        add(
+            "Custom formats — require any",
+            ", ".join(cfs) or "(none)",
+            ok,
+            ("has " + ", ".join(present)) if ok else "none of the required formats are present",
+        )
+    if rules.customformats_exclude:
+        excluded = [cf for cf in rules.customformats_exclude if cf in cfs]
+        ok = not excluded
+        add(
+            "Custom formats — exclude",
+            ", ".join(cfs) or "(none)",
+            ok,
+            ("present: " + ", ".join(excluded)) if excluded else "no excluded formats present",
+        )
+
+    if rules.min_customformat_score is not None:
+        score = custom_format_score or 0
+        ok = score >= rules.min_customformat_score
+        add(
+            "Minimum custom format score",
+            str(score),
+            ok,
+            f"{score} ≥ {rules.min_customformat_score}"
+            if ok
+            else f"{score} < {rules.min_customformat_score}",
+        )
+
+    for check in checks:
+        if not check["passed"]:
+            check["blocking"] = True
+            break
+
+    return checks
+
+
 def should_process(payload: RadarrWebhook | SonarrWebhook, rules: TrackerRules) -> tuple[bool, str]:
     """Check if webhook should be processed based on trigger filters.
 

@@ -62,6 +62,7 @@ export interface SimulateRelease {
   custom_formats: string[];
   custom_format_score: number | null;
   download_client: string;
+  files: string[];
 }
 
 export interface SimulateStep {
@@ -69,6 +70,14 @@ export interface SimulateStep {
   before: string;
   after: string;
   error?: string | null;
+}
+
+export interface FilterCheck {
+  label: string;
+  tested: string;
+  passed: boolean;
+  detail: string;
+  blocking: boolean;
 }
 
 export interface SimulateResponse {
@@ -82,6 +91,17 @@ export interface SimulateResponse {
   changed: boolean;
   steps: SimulateStep[];
   errors: string[];
+  trigger_checks: FilterCheck[];
+  file_renames: FileRenamePreview[];
+  file_warnings: string[];
+  root_folder: string | null;
+}
+
+export interface TorrentSampleResponse {
+  status: string;
+  title: string | null;
+  files: string[];
+  reason: string | null;
 }
 
 export interface ValidatePatternResponse {
@@ -194,4 +214,18 @@ export function emptyRuleSet(): RuleSet {
 
 export function emptyTracker(): TrackerConfig {
   return { name: "", match: [], rules: emptyRuleSet() };
+}
+
+export function exampleSampleRelease(): SimulateRelease {
+  const title = "Some.Movie.2024.1080p.BluRay.x264-GROUP";
+  return {
+    release_title: title,
+    indexer: "",
+    quality: "Bluray-1080p",
+    release_group: "GROUP",
+    custom_formats: [],
+    custom_format_score: null,
+    download_client: "",
+    files: [`${title}/${title}.mkv`],
+  };
 }

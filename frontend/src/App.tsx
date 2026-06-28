@@ -1,12 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Link, RouterProvider, createBrowserRouter } from "react-router-dom";
+import { Link, Navigate, RouterProvider, createBrowserRouter } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AppShell } from "@/components/layout/AppShell";
 import { buttonClasses } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider, useTheme } from "@/hooks/useTheme";
 import { RulesPage } from "@/pages/RulesPage";
-import { SimulatorPage } from "@/pages/SimulatorPage";
 import { StatusPage } from "@/pages/StatusPage";
 import { ToolsPage } from "@/pages/ToolsPage";
 
@@ -34,7 +33,7 @@ const router = createBrowserRouter([
     element: <AppShell />,
     children: [
       { index: true, element: <RulesPage /> },
-      { path: "simulator", element: <SimulatorPage /> },
+      { path: "simulator", element: <Navigate to="/" replace /> },
       { path: "tools", element: <ToolsPage /> },
       { path: "status", element: <StatusPage /> },
       { path: "*", element: <NotFound /> },

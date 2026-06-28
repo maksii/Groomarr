@@ -25,8 +25,13 @@ Fixes infinite download loops (Couldn't add release X from Indexer Y to download
 
 Open `http://<host>:8000/` in a browser to manage Groomarr without touching YAML.
 
-- **Rules** — Edit the global rule set and per-tracker overrides: trigger filters (indexers, qualities, custom formats, release groups, score threshold) and rename rules (prefix/suffix, remove/replace/skip patterns). Regex patterns are validated as you type. Changes are written back to `rename_rules.yaml` (the previous file is backed up to `.bak`) and reloaded automatically.
-- **Simulator** — Paste a sample release (title, indexer, quality, etc.) and instantly see which tracker matched, whether it would be processed (and why not, if skipped), and the resulting renamed title with a step-by-step breakdown. Uses the exact production engine, so the preview matches reality.
+- **Rules** — A single guided workspace: edit the global rule set and per-tracker overrides (trigger filters and rename rules), with inline help on every field, while a **live preview** on the right reacts to every change *before you save*. For an editable test release it shows, in real time:
+  - which tracker matched (or global) and whether the release would be processed,
+  - a per-filter breakdown explaining **why** — including non-title rules like excludes, download client, custom formats, and score,
+  - the resulting torrent/folder name with a step-by-step transformation, and
+  - how the individual **files** would be renamed.
+
+  You can load a real torrent into the preview by hash or tracker ID. Regex patterns are validated as you type. Saving writes `rename_rules.yaml` (backing up the previous file to `.bak`) and reloads automatically.
 - **Tools** — Preview a rename, apply a manual rename, or find a torrent by its tracker ID.
 - **Status** — Connectivity (qBittorrent/Sonarr/Radarr) and the current deployment settings.
 
@@ -270,8 +275,9 @@ score_validation_policy: "block"  # or "warn"
 | `/find/torrent` | POST | Find a torrent by its tracker ID (URL or number) |
 | `/reload` | GET | Reload rename rules |
 | `/api/config` | GET / PUT | Read or save rename rules (used by the web UI) |
-| `/api/rules/simulate` | POST | Simulate filtering + renaming for a sample release |
+| `/api/rules/simulate` | POST | Simulate filtering + renaming for a sample release (trigger breakdown + file renames) |
 | `/api/rules/validate-pattern` | POST | Validate a regex or indexer match pattern |
+| `/api/torrent-sample` | POST | Load a real torrent's name + files into the preview (by hash or tracker ID) |
 | `/api/settings` | GET | Non-sensitive runtime settings |
 | `/api/status` | GET | Service + connectivity status |
 | `/docs` | GET | Swagger API documentation |
