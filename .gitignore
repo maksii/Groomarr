@@ -65,6 +65,16 @@ ENV/
 
 # Local config (don't commit actual secrets)
 config/rename_rules.yaml
+config/rename_rules.yaml.bak
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Playwright / local verification artifacts
+.playwright-mcp/
+/*.png
 
 # OS files
 .DS_Store

@@ -1,14 +1,19 @@
 """FastAPI application for Groomarr webhook service."""
 
+import asyncio
 import json
 import logging
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import __version__, config
+from .api import check_connection_async
+from .api import router as api_router
 from .arrapi import ArrClient
 from .config import TrackerRules, reload_rules, settings, setup_logging
 from .models import (
@@ -272,6 +277,69 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Web UI / management API (rules editor, simulator, status, settings)
+app.include_router(api_router)
+
+# Maximum accepted body size for /api/* requests (defense against oversized payloads)
+MAX_API_BODY_BYTES = 2 * 1024 * 1024  # 2 MB
+
+# Doc routes load Swagger UI / ReDoc from a CDN with inline bootstrap scripts,
+# so the strict CSP would break them. Exempt only these EXACT paths (a prefix
+# match would also exempt SPA routes like /docsx).
+_CSP_EXEMPT_PATHS = {"/docs", "/docs/oauth2-redirect", "/redoc"}
+
+# Body-size limit applies to all endpoints that read a request body.
+_BODY_LIMITED_PREFIXES = ("/api/", "/webhook/", "/rename/", "/find/")
+
+# Strict Content-Security-Policy for the app. 'unsafe-inline' is allowed for
+# styles only (UI primitives set inline positioning styles); scripts stay
+# locked to same-origin, which is the meaningful XSS control.
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self'; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "frame-ancestors 'none'; "
+    "form-action 'self'"
+)
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    """Enforce a request-body size limit on the API and add security headers.
+
+    The interactive API docs (/docs, /redoc) load Swagger UI from a CDN, so the
+    strict CSP is not applied to those paths (it would break them).
+    """
+    path = request.url.path
+
+    if path.startswith(_BODY_LIMITED_PREFIXES):
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                if int(content_length) > MAX_API_BODY_BYTES:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"status": "error", "reason": "Request body too large"},
+                    )
+            except ValueError:
+                pass
+
+    response = await call_next(request)
+
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    if path not in _CSP_EXEMPT_PATHS:
+        response.headers.setdefault("Content-Security-Policy", _CSP)
+
+    return response
+
 
 # =============================================================================
 # Background Task Processing
@@ -453,9 +521,13 @@ async def health():
 
     Returns service status including qBittorrent and Arr API connectivity.
     """
-    qbit_connected = qbit_client.check_connection() if qbit_client else False
-    sonarr_connected = sonarr_client.check_connection() if sonarr_client else None
-    radarr_connected = radarr_client.check_connection() if radarr_client else None
+    # Run connectivity checks in parallel, off the event loop (non-blocking).
+    qbit_res, sonarr_connected, radarr_connected = await asyncio.gather(
+        check_connection_async(qbit_client),
+        check_connection_async(sonarr_client),
+        check_connection_async(radarr_client),
+    )
+    qbit_connected = bool(qbit_res)
 
     # Build response
     response = {
@@ -515,7 +587,7 @@ async def manual_rename(request: ManualRenameRequest):
         )
 
     # Check if torrent exists
-    torrent = qbit_client.get_torrent_info(request.torrent_hash)
+    torrent = await asyncio.to_thread(qbit_client.get_torrent_info, request.torrent_hash)
     if not torrent:
         logger.warning(f"[manual] Torrent {hash_short}... not found")
         return ManualRenameResponse(
@@ -612,7 +684,7 @@ async def preview_rename(request: ManualRenameRequest):
         )
 
     # Check if torrent exists
-    torrent = qbit_client.get_torrent_info(request.torrent_hash)
+    torrent = await asyncio.to_thread(qbit_client.get_torrent_info, request.torrent_hash)
     if not torrent:
         logger.warning(f"[preview] Torrent {hash_short}... not found")
         return PreviewRenameResponse(
@@ -626,7 +698,7 @@ async def preview_rename(request: ManualRenameRequest):
     new_name = request.new_name
 
     # Get files and root folder
-    files = qbit_client.get_files(request.torrent_hash)
+    files = await asyncio.to_thread(qbit_client.get_files, request.torrent_hash)
     root_folder = get_root_folder(files)
 
     # Build response
@@ -753,7 +825,7 @@ async def find_torrent_by_id(request: FindTorrentRequest):
         )
 
     # Search for torrent with matching ID in comment
-    torrent = qbit_client.find_torrent_by_comment_id(torrent_id)
+    torrent = await asyncio.to_thread(qbit_client.find_torrent_by_comment_id, torrent_id)
 
     if torrent:
         torrent_hash = torrent.hash
@@ -1030,12 +1102,65 @@ async def prowlarr_webhook(request: Request):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Global exception handler."""
+    """Global exception handler.
+
+    Logs the full detail server-side but returns a generic message to the client
+    so internal details (paths, stack info) are never leaked.
+    """
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"status": "error", "reason": str(exc)},
+        content={"status": "error", "reason": "Internal server error"},
     )
+
+
+# =============================================================================
+# Single-Page App (static frontend)
+# =============================================================================
+
+# The built frontend (Vite output) is served from settings.static_dir. In Docker
+# this directory is populated by the frontend build stage. When it is absent
+# (e.g. running the API alone), the UI routes return a helpful 404.
+_STATIC_DIR = Path(settings.static_dir)
+_ASSETS_DIR = _STATIC_DIR / "assets"
+_INDEX_FILE = _STATIC_DIR / "index.html"
+
+# Path prefixes that must never be served the SPA shell (API surfaces return JSON)
+_NON_SPA_PREFIXES = ("api/", "webhook/", "rename/", "find/")
+_NON_SPA_EXACT = {"health", "reload", "openapi.json", "docs", "redoc"}
+
+if _ASSETS_DIR.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_ASSETS_DIR)), name="assets")
+
+
+def _serve_index() -> FileResponse | JSONResponse:
+    """Serve the SPA shell, or a clear message if the UI has not been built."""
+    if _INDEX_FILE.is_file():
+        return FileResponse(str(_INDEX_FILE), headers={"Cache-Control": "no-cache"})
+    return JSONResponse(
+        status_code=404,
+        content={
+            "status": "error",
+            "reason": "Web UI not built. Build the frontend (npm run build) or use the API.",
+        },
+    )
+
+
+@app.get("/", include_in_schema=False)
+async def spa_root():
+    """Serve the SPA entry point."""
+    return _serve_index()
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_catch_all(full_path: str):
+    """Serve the SPA for client-side routes; JSON 404 for unknown API paths.
+
+    Declared last so all explicit API/webhook/docs routes match first.
+    """
+    if full_path.startswith(_NON_SPA_PREFIXES) or full_path in _NON_SPA_EXACT:
+        return JSONResponse(status_code=404, content={"status": "error", "reason": "Not found"})
+    return _serve_index()
 
 
 # =============================================================================

@@ -1,7 +1,11 @@
 """Configuration management for Groomarr."""
 
+import contextlib
 import logging
+import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -96,6 +100,14 @@ class Settings(BaseSettings):
     # Config file path
     rules_file: str = Field(default="/config/rename_rules.yaml")
 
+    # Web UI
+    # Directory containing the built single-page app (index.html + assets).
+    # In Docker this is populated by the frontend build stage.
+    static_dir: str = Field(default="frontend/dist")
+    # When true, the web UI/API cannot modify rename_rules.yaml (read-only mode).
+    # Useful when the config is managed externally (e.g. mounted read-only).
+    config_readonly: bool = Field(default=False)
+
     model_config = ConfigDict(env_prefix="", case_sensitive=False)
 
 
@@ -133,7 +145,13 @@ class TrackerRules:
 
     @classmethod
     def from_dict(cls, data: dict) -> "TrackerRules":
-        """Create TrackerRules from a dictionary.
+        """Create TrackerRules from a dictionary, coercing malformed types.
+
+        Hand-edited YAML can contain the wrong type for a field (e.g. a list where
+        a mapping is expected, or a number where a string is expected). To keep
+        loading robust — so the web UI can still display and fix a broken file
+        instead of erroring — unexpected types are coerced to safe values rather
+        than propagated to the engine.
 
         Args:
             data: Dictionary with rule settings
@@ -143,31 +161,95 @@ class TrackerRules:
         """
         rules = cls()
 
+        if not isinstance(data, dict):
+            return rules
+
+        def _str_list(key: str) -> list[str]:
+            value = data.get(key)
+            return [str(item) for item in value] if isinstance(value, list) else []
+
         # Load trigger filters
-        rules.indexers_include = data.get("indexers_include") or []
-        rules.indexers_exclude = data.get("indexers_exclude") or []
-        rules.qualities_include = data.get("qualities_include") or []
-        rules.qualities_exclude = data.get("qualities_exclude") or []
-        rules.customformats_require_any = data.get("customformats_require_any") or []
-        rules.customformats_exclude = data.get("customformats_exclude") or []
-        rules.min_customformat_score = data.get("min_customformat_score")
-        rules.download_clients_include = data.get("download_clients_include") or []
-        rules.download_clients_exclude = data.get("download_clients_exclude") or []
-        rules.release_groups_include = data.get("release_groups_include") or []
-        rules.release_groups_exclude = data.get("release_groups_exclude") or []
+        rules.indexers_include = _str_list("indexers_include")
+        rules.indexers_exclude = _str_list("indexers_exclude")
+        rules.qualities_include = _str_list("qualities_include")
+        rules.qualities_exclude = _str_list("qualities_exclude")
+        rules.customformats_require_any = _str_list("customformats_require_any")
+        rules.customformats_exclude = _str_list("customformats_exclude")
+        rules.download_clients_include = _str_list("download_clients_include")
+        rules.download_clients_exclude = _str_list("download_clients_exclude")
+        rules.release_groups_include = _str_list("release_groups_include")
+        rules.release_groups_exclude = _str_list("release_groups_exclude")
+
+        score = data.get("min_customformat_score")
+        # bool is a subclass of int — exclude it explicitly
+        rules.min_customformat_score = (
+            score if isinstance(score, int) and not isinstance(score, bool) else None
+        )
 
         # Load rename rules
-        rules.prefix = data.get("prefix") or ""
-        rules.suffix = data.get("suffix") or ""
-        rules.remove_patterns = data.get("remove_patterns") or []
-        rules.replace_patterns = data.get("replace_patterns") or {}
-        rules.skip_title_patterns = data.get("skip_title_patterns") or []
+        prefix = data.get("prefix")
+        rules.prefix = prefix if isinstance(prefix, str) else ""
+        suffix = data.get("suffix")
+        rules.suffix = suffix if isinstance(suffix, str) else ""
+        rules.remove_patterns = _str_list("remove_patterns")
+        replace = data.get("replace_patterns")
+        rules.replace_patterns = (
+            {str(k): str(v) for k, v in replace.items()} if isinstance(replace, dict) else {}
+        )
+        rules.skip_title_patterns = _str_list("skip_title_patterns")
 
         # Load score validation settings
         rules.validate_custom_format_score = bool(data.get("validate_custom_format_score", False))
-        rules.score_validation_policy = data.get("score_validation_policy") or "block"
+        policy = data.get("score_validation_policy")
+        rules.score_validation_policy = policy if isinstance(policy, str) and policy else "block"
 
         return rules
+
+    # List-valued fields, in a stable order for serialization
+    _LIST_FIELDS = (
+        "indexers_include",
+        "indexers_exclude",
+        "qualities_include",
+        "qualities_exclude",
+        "customformats_require_any",
+        "customformats_exclude",
+        "download_clients_include",
+        "download_clients_exclude",
+        "release_groups_include",
+        "release_groups_exclude",
+        "remove_patterns",
+        "skip_title_patterns",
+    )
+
+    def to_dict(self) -> dict:
+        """Serialize to a minimal dict for YAML output.
+
+        Omits empty/default values so the saved file stays clean and readable.
+        The inverse of :meth:`from_dict`.
+        """
+        data: dict = {}
+
+        for name in self._LIST_FIELDS:
+            value = getattr(self, name)
+            if value:
+                data[name] = list(value)
+
+        if self.min_customformat_score is not None:
+            data["min_customformat_score"] = self.min_customformat_score
+
+        if self.prefix:
+            data["prefix"] = self.prefix
+        if self.suffix:
+            data["suffix"] = self.suffix
+        if self.replace_patterns:
+            data["replace_patterns"] = dict(self.replace_patterns)
+
+        if self.validate_custom_format_score:
+            data["validate_custom_format_score"] = True
+        if self.score_validation_policy and self.score_validation_policy != "block":
+            data["score_validation_policy"] = self.score_validation_policy
+
+        return data
 
     def has_trigger_filters(self) -> bool:
         """Check if any trigger filters are configured."""
@@ -262,6 +344,14 @@ class TrackerConfig:
         rules = TrackerRules.from_dict(rules_data)
         return cls(name=name, match=match, rules=rules)
 
+    def to_dict(self) -> dict:
+        """Serialize this tracker config to a dict for YAML output."""
+        return {
+            "name": self.name,
+            "match": list(self.match),
+            "rules": self.rules.to_dict(),
+        }
+
 
 class RenameRules:
     """Hierarchical rename rules with global defaults and tracker-specific overrides.
@@ -281,6 +371,7 @@ class RenameRules:
         self.config_path: str = ""
         self.config_found: bool = False
         self.config_error: str | None = None
+        self.config_format: str = "empty"  # hierarchical | flat | empty | missing
 
         # Global rules (fallback when no tracker matches)
         self.global_rules: TrackerRules = TrackerRules()
@@ -306,6 +397,7 @@ class RenameRules:
         path = Path(file_path)
         if not path.exists():
             config.config_found = False
+            config.config_format = "missing"
             return config
 
         config.config_found = True
@@ -313,20 +405,57 @@ class RenameRules:
         try:
             with open(path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
-
-            # Check if new hierarchical format (has 'global' or 'trackers' key)
-            if "global" in data or "trackers" in data:
-                # New hierarchical format
-                config._load_hierarchical_format(data)
-            else:
-                # Legacy flat format - treat all as global rules
-                config.global_rules = TrackerRules.from_dict(data)
-                logger.debug("Loaded config in legacy flat format")
-
+            config._load_from_data(data)
         except Exception as e:
             config.config_error = str(e)
 
         return config
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RenameRules":
+        """Build rules from an already-parsed config dict (no file access).
+
+        Supports both the legacy flat format and the hierarchical
+        ``global`` + ``trackers`` format. Used to validate or simulate a draft
+        configuration posted from the web UI without touching disk.
+
+        Args:
+            data: Parsed configuration dictionary
+
+        Returns:
+            RenameRules instance
+        """
+        config = cls()
+        config.config_found = True
+        config._load_from_data(data or {})
+        return config
+
+    def _load_from_data(self, data: dict) -> None:
+        """Populate global_rules and trackers from a parsed config dict."""
+        # Check if new hierarchical format (has 'global' or 'trackers' key)
+        if "global" in data or "trackers" in data:
+            # New hierarchical format
+            self.config_format = "hierarchical"
+            self._load_hierarchical_format(data)
+        elif data:
+            # Legacy flat format - treat all as global rules
+            self.config_format = "flat"
+            self.global_rules = TrackerRules.from_dict(data)
+            logger.debug("Loaded config in legacy flat format")
+        else:
+            self.config_format = "empty"
+
+    def to_dict(self) -> dict:
+        """Serialize to a hierarchical dict ({'global': ..., 'trackers': [...]}).
+
+        Always emits the recommended hierarchical format. ``trackers`` is only
+        included when at least one tracker is configured. The inverse of
+        :meth:`from_dict`.
+        """
+        data: dict = {"global": self.global_rules.to_dict()}
+        if self.trackers:
+            data["trackers"] = [t.to_dict() for t in self.trackers]
+        return data
 
     def _load_hierarchical_format(self, data: dict):
         """Load configuration in hierarchical format.
@@ -447,6 +576,68 @@ def reload_rules():
     global rules
     rules = RenameRules.from_yaml(settings.rules_file)
     logger.info("Rules reloaded")
+
+
+RULES_FILE_HEADER = (
+    "# Groomarr rename rules\n"
+    "# This file is managed by the Groomarr web UI.\n"
+    "# You can still edit it by hand, but comments are NOT preserved when the\n"
+    "# file is next saved from the UI. A backup of the previous version is kept\n"
+    "# alongside this file with a .bak extension.\n"
+)
+
+
+def save_rules(data: dict, file_path: str | None = None) -> Path:
+    """Atomically write rename rules to YAML, keeping a backup of the previous file.
+
+    The write is crash-safe: the new content is written to a temporary file in the
+    same directory and then atomically moved into place via ``os.replace``. The
+    previous file (if any) is copied to ``<path>.bak`` first.
+
+    Args:
+        data: Hierarchical rules dict, typically from :meth:`RenameRules.to_dict`.
+        file_path: Target path (defaults to ``settings.rules_file``).
+
+    Returns:
+        The path that was written.
+
+    Raises:
+        OSError: If the file could not be written.
+    """
+    path = Path(file_path or settings.rules_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    body = yaml.safe_dump(
+        data,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+    )
+    content = f"{RULES_FILE_HEADER}\n{body}"
+
+    # Backup the existing file before overwriting
+    if path.exists():
+        backup = path.with_name(path.name + ".bak")
+        try:
+            shutil.copy2(path, backup)
+        except OSError as e:
+            logger.warning(f"Could not write backup {backup}: {e}")
+
+    # Atomic write: temp file in the same directory, then replace
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+
+    logger.info(f"Saved rename rules to {path}")
+    return path
 
 
 class HealthCheckFilter(logging.Filter):

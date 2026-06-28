@@ -3,8 +3,10 @@
 import asyncio
 import logging
 import re
+import socket
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 from qbittorrentapi import Client
 from qbittorrentapi.exceptions import APIConnectionError, LoginFailed
@@ -19,7 +21,12 @@ class QBitClient:
     """Wrapper for qBittorrent API client with retry logic."""
 
     def __init__(
-        self, url: str, username: str, password: str, api_delay: float = DEFAULT_API_DELAY
+        self,
+        url: str,
+        username: str,
+        password: str,
+        api_delay: float = DEFAULT_API_DELAY,
+        request_timeout: tuple[float, float] = (3.05, 30.0),
     ):
         """Initialize qBittorrent client.
 
@@ -28,11 +35,15 @@ class QBitClient:
             username: qBittorrent username
             password: qBittorrent password
             api_delay: Delay between API operations in seconds (default 0.1s/100ms)
+            request_timeout: (connect, read) timeout in seconds for HTTP requests.
+                Bounds how long a call blocks when qBittorrent is unreachable so
+                that health/status checks fail fast instead of hanging.
         """
         self.url = url
         self.username = username
         self.password = password
         self.api_delay = api_delay
+        self.request_timeout = request_timeout
         self._client: Client | None = None
         self._last_operation_time: float = 0
 
@@ -43,9 +54,30 @@ class QBitClient:
                 host=self.url,
                 username=self.username,
                 password=self.password,
+                REQUESTS_ARGS={"timeout": self.request_timeout},
+                # Disable urllib3's connection retry storm; bounded retries still
+                # happen at the qbittorrent-api request-manager layer.
+                HTTPADAPTER_ARGS={"max_retries": 0},
             )
             logger.info(f"Connected to qBittorrent at {self.url}")
         return self._client
+
+    def _is_reachable(self, timeout: float) -> bool:
+        """Quick TCP reachability probe for the qBittorrent host.
+
+        Used before the (retry-heavy) API client so an unreachable or
+        misconfigured host fails in a few seconds instead of tens of seconds.
+        """
+        try:
+            parsed = urlparse(self.url)
+            host = parsed.hostname
+            if not host:
+                return False
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
 
     def _ensure_connected(self) -> Client:
         """Ensure client is connected, reconnect if needed."""
@@ -65,6 +97,9 @@ class QBitClient:
         Returns:
             True if connected, False otherwise
         """
+        # Fast-fail if the host isn't even reachable (avoids a slow retry storm).
+        if not self._is_reachable(self.request_timeout[0]):
+            return False
         try:
             client = self._get_client()
             client.app_version()
@@ -193,8 +228,10 @@ class QBitClient:
         """
         try:
             await self._apply_rate_limit()
-            client = self._ensure_connected()
-            client.torrents_rename(torrent_hash=torrent_hash, new_torrent_name=new_name)
+            client = await asyncio.to_thread(self._ensure_connected)
+            await asyncio.to_thread(
+                client.torrents_rename, torrent_hash=torrent_hash, new_torrent_name=new_name
+            )
             logger.info(f"Renamed torrent {torrent_hash[:8]}... to '{new_name}'")
             return True
         except Exception as e:
@@ -214,9 +251,12 @@ class QBitClient:
         """
         try:
             await self._apply_rate_limit()
-            client = self._ensure_connected()
-            client.torrents_rename_folder(
-                torrent_hash=torrent_hash, old_path=old_path, new_path=new_path
+            client = await asyncio.to_thread(self._ensure_connected)
+            await asyncio.to_thread(
+                client.torrents_rename_folder,
+                torrent_hash=torrent_hash,
+                old_path=old_path,
+                new_path=new_path,
             )
             logger.info(f"Renamed folder in {torrent_hash[:8]}...: '{old_path}' -> '{new_path}'")
             return True
@@ -237,9 +277,12 @@ class QBitClient:
         """
         try:
             await self._apply_rate_limit()
-            client = self._ensure_connected()
-            client.torrents_rename_file(
-                torrent_hash=torrent_hash, old_path=old_path, new_path=new_path
+            client = await asyncio.to_thread(self._ensure_connected)
+            await asyncio.to_thread(
+                client.torrents_rename_file,
+                torrent_hash=torrent_hash,
+                old_path=old_path,
+                new_path=new_path,
             )
             logger.info(f"Renamed file in {torrent_hash[:8]}...: '{old_path}' -> '{new_path}'")
             return True

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from .config import TrackerRules
@@ -33,7 +33,7 @@ class RenameResult:
         return self.files_renamed + self.files_failed + self.files_skipped
 
 
-class RenameMode(str, Enum):
+class RenameMode(StrEnum):
     """Available rename modes."""
 
     TORRENT_ONLY = "torrent_only"
@@ -60,7 +60,92 @@ def matches_any(value: str, patterns: list[str]) -> bool:
     """
     if not patterns:
         return False
-    return any(re.search(p, value, re.IGNORECASE) for p in patterns)
+    for p in patterns:
+        try:
+            if re.search(p, value, re.IGNORECASE):
+                return True
+        except re.error as e:
+            logger.warning(f"Invalid filter pattern '{p}': {e}")
+    return False
+
+
+def evaluate_filters(
+    rules: TrackerRules,
+    *,
+    indexer: str = "",
+    quality: str = "",
+    release_group: str = "",
+    custom_formats: list[str] | None = None,
+    custom_format_score: int | None = None,
+    download_client: str = "",
+) -> tuple[bool, str]:
+    """Evaluate trigger filters against release attributes.
+
+    This is the pure core of the filtering logic, decoupled from the webhook
+    payload shape so it can be reused by both real webhook handling
+    (via ``should_process``) and the rules simulator/preview UI.
+
+    Args:
+        rules: TrackerRules with filters (can be global or tracker-specific)
+        indexer: Indexer/tracker name
+        quality: Release quality string
+        release_group: Release group name
+        custom_formats: List of custom format names present on the release
+        custom_format_score: Custom format score (None treated as 0 for threshold)
+        download_client: Download client name
+
+    Returns:
+        Tuple of (should_process, skip_reason). skip_reason is empty when passing.
+    """
+    # Download client filter
+    download_client = download_client or ""
+    if rules.download_clients_include:
+        if not matches_any(download_client, rules.download_clients_include):
+            return False, f"download_client '{download_client}' not in include list"
+    if matches_any(download_client, rules.download_clients_exclude):
+        return False, f"download_client '{download_client}' in exclude list"
+
+    # Indexer filter
+    indexer = indexer or ""
+    if rules.indexers_include:
+        if not matches_any(indexer, rules.indexers_include):
+            return False, f"indexer '{indexer}' not in include list"
+    if matches_any(indexer, rules.indexers_exclude):
+        return False, f"indexer '{indexer}' in exclude list"
+
+    # Quality filter
+    quality = quality or ""
+    if rules.qualities_include:
+        if not matches_any(quality, rules.qualities_include):
+            return False, f"quality '{quality}' not in include list"
+    if matches_any(quality, rules.qualities_exclude):
+        return False, f"quality '{quality}' in exclude list"
+
+    # Release group filter
+    group = release_group or ""
+    if rules.release_groups_include:
+        if group and not matches_any(group, rules.release_groups_include):
+            return False, f"release_group '{group}' not in include list"
+    if group and matches_any(group, rules.release_groups_exclude):
+        return False, f"release_group '{group}' in exclude list"
+
+    # Custom format filters
+    cf_list = custom_formats or []
+    if rules.customformats_require_any:
+        if not any(cf in cf_list for cf in rules.customformats_require_any):
+            return False, "no required custom formats present"
+    if rules.customformats_exclude:
+        excluded = [cf for cf in rules.customformats_exclude if cf in cf_list]
+        if excluded:
+            return False, f"excluded custom format '{excluded[0]}' present"
+
+    # Custom format score
+    if rules.min_customformat_score is not None:
+        score = custom_format_score or 0
+        if score < rules.min_customformat_score:
+            return False, f"score {score} < min {rules.min_customformat_score}"
+
+    return True, ""
 
 
 def should_process(payload: RadarrWebhook | SonarrWebhook, rules: TrackerRules) -> tuple[bool, str]:
@@ -73,55 +158,15 @@ def should_process(payload: RadarrWebhook | SonarrWebhook, rules: TrackerRules) 
     Returns:
         Tuple of (should_process, skip_reason)
     """
-    # Download client filter
-    download_client = payload.downloadClient or ""
-    if rules.download_clients_include:
-        if not matches_any(download_client, rules.download_clients_include):
-            return False, f"download_client '{download_client}' not in include list"
-    if matches_any(download_client, rules.download_clients_exclude):
-        return False, f"download_client '{download_client}' in exclude list"
-
-    # Indexer filter
-    indexer = payload.release.indexer or ""
-    if rules.indexers_include:
-        if not matches_any(indexer, rules.indexers_include):
-            return False, f"indexer '{indexer}' not in include list"
-    if matches_any(indexer, rules.indexers_exclude):
-        return False, f"indexer '{indexer}' in exclude list"
-
-    # Quality filter
-    quality = payload.release.quality or ""
-    if rules.qualities_include:
-        if not matches_any(quality, rules.qualities_include):
-            return False, f"quality '{quality}' not in include list"
-    if matches_any(quality, rules.qualities_exclude):
-        return False, f"quality '{quality}' in exclude list"
-
-    # Release group filter
-    group = payload.release.releaseGroup or ""
-    if rules.release_groups_include:
-        if group and not matches_any(group, rules.release_groups_include):
-            return False, f"release_group '{group}' not in include list"
-    if group and matches_any(group, rules.release_groups_exclude):
-        return False, f"release_group '{group}' in exclude list"
-
-    # Custom format filters
-    cf_list = payload.release.customFormats or []
-    if rules.customformats_require_any:
-        if not any(cf in cf_list for cf in rules.customformats_require_any):
-            return False, "no required custom formats present"
-    if rules.customformats_exclude:
-        excluded = [cf for cf in rules.customformats_exclude if cf in cf_list]
-        if excluded:
-            return False, f"excluded custom format '{excluded[0]}' present"
-
-    # Custom format score
-    if rules.min_customformat_score is not None:
-        score = payload.release.customFormatScore or 0
-        if score < rules.min_customformat_score:
-            return False, f"score {score} < min {rules.min_customformat_score}"
-
-    return True, ""
+    return evaluate_filters(
+        rules,
+        indexer=payload.release.indexer or "",
+        quality=payload.release.quality or "",
+        release_group=payload.release.releaseGroup or "",
+        custom_formats=payload.release.customFormats or [],
+        custom_format_score=payload.release.customFormatScore,
+        download_client=payload.downloadClient or "",
+    )
 
 
 # =============================================================================
@@ -215,9 +260,12 @@ def apply_rename_rules(original_name: str, rules: TrackerRules) -> str:
 
     # 2. Check skip patterns
     for pattern in rules.skip_title_patterns:
-        if re.search(pattern, name, re.IGNORECASE):
-            logger.debug(f"Skipping rename due to skip pattern: {pattern}")
-            return strip_media_extension(original_name)
+        try:
+            if re.search(pattern, name, re.IGNORECASE):
+                logger.debug(f"Skipping rename due to skip pattern: {pattern}")
+                return strip_media_extension(original_name)
+        except re.error as e:
+            logger.warning(f"Invalid skip pattern '{pattern}': {e}")
 
     # 3. Remove patterns
     for pattern in rules.remove_patterns:
@@ -240,6 +288,119 @@ def apply_rename_rules(original_name: str, rules: TrackerRules) -> str:
     name = sanitize_filename(name)
 
     return name
+
+
+def apply_rename_rules_traced(
+    original_name: str, rules: TrackerRules
+) -> tuple[str, list[dict[str, str]]]:
+    """Apply rename rules while recording a step-by-step trace.
+
+    Mirrors :func:`apply_rename_rules` exactly (enforced by tests) but records a
+    human-readable trace of every transformation that changed the name. Used by
+    the simulator UI to explain *why* a release becomes a given name.
+
+    Args:
+        original_name: Original release title
+        rules: TrackerRules with rename rules
+
+    Returns:
+        Tuple of (final_name, steps). Each step is a dict with keys
+        ``rule``, ``before``, ``after`` and optionally ``error``.
+    """
+    steps: list[dict[str, str]] = []
+    name = original_name
+
+    # 1. Strip media extension
+    after = strip_media_extension(name)
+    if after != name:
+        steps.append({"rule": "strip media extension", "before": name, "after": after})
+    name = after
+
+    # 2. Skip patterns (short-circuit: revert to the original, extension stripped)
+    for pattern in rules.skip_title_patterns:
+        try:
+            if re.search(pattern, name, re.IGNORECASE):
+                final = strip_media_extension(original_name)
+                steps.append(
+                    {
+                        "rule": f"skip_title_patterns matched '{pattern}' (rename skipped)",
+                        "before": name,
+                        "after": final,
+                    }
+                )
+                return final, steps
+        except re.error as e:
+            steps.append(
+                {
+                    "rule": f"skip_title_patterns: invalid regex '{pattern}'",
+                    "before": name,
+                    "after": name,
+                    "error": str(e),
+                }
+            )
+
+    # 3. Remove patterns
+    for pattern in rules.remove_patterns:
+        try:
+            after = re.sub(pattern, "", name)
+            if after != name:
+                steps.append(
+                    {"rule": f"remove_patterns: '{pattern}'", "before": name, "after": after}
+                )
+            name = after
+        except re.error as e:
+            steps.append(
+                {
+                    "rule": f"remove_patterns: invalid regex '{pattern}'",
+                    "before": name,
+                    "after": name,
+                    "error": str(e),
+                }
+            )
+
+    # 4. Replace patterns
+    for pattern, replacement in rules.replace_patterns.items():
+        try:
+            after = re.sub(pattern, replacement, name)
+            if after != name:
+                steps.append(
+                    {
+                        "rule": f"replace_patterns: '{pattern}' → '{replacement}'",
+                        "before": name,
+                        "after": after,
+                    }
+                )
+            name = after
+        except re.error as e:
+            steps.append(
+                {
+                    "rule": f"replace_patterns: invalid regex '{pattern}'",
+                    "before": name,
+                    "after": name,
+                    "error": str(e),
+                }
+            )
+
+    # 5. Add prefix/suffix
+    before = name
+    name = f"{rules.prefix}{name.strip()}{rules.suffix}"
+    if name != before:
+        labels = []
+        if rules.prefix:
+            labels.append(f"prefix '{rules.prefix}'")
+        if rules.suffix:
+            labels.append(f"suffix '{rules.suffix}'")
+        steps.append(
+            {"rule": " + ".join(labels) or "trim whitespace", "before": before, "after": name}
+        )
+
+    # 6. Sanitize for filesystem
+    after = sanitize_filename(name)
+    if after != name:
+        steps.append({"rule": "sanitize for filesystem", "before": name, "after": after})
+    name = after
+
+    return name, steps
 
 
 # =============================================================================
@@ -853,7 +1014,7 @@ async def _verify_rename_state(
         errors: list[str] = []
 
         # Re-fetch current state from qBittorrent
-        torrent = qbit.get_torrent_info(torrent_hash)
+        torrent = await asyncio.to_thread(qbit.get_torrent_info, torrent_hash)
         if not torrent:
             errors.append(f"Torrent {hash_short}... not found during verification")
             if attempt < max_retries - 1:
@@ -871,7 +1032,7 @@ async def _verify_rename_state(
                 )
 
         # Fetch files once for both file and folder checks
-        current_files = qbit.get_files(torrent_hash)
+        current_files = await asyncio.to_thread(qbit.get_files, torrent_hash)
         current_paths = {f.get("name", "") for f in current_files}
 
         # Check files
@@ -937,7 +1098,7 @@ async def perform_rename(
     result = RenameResult(success=True)
 
     # Get current torrent info
-    torrent = qbit.get_torrent_info(torrent_hash)
+    torrent = await asyncio.to_thread(qbit.get_torrent_info, torrent_hash)
     if not torrent:
         logger.error(f"Torrent {hash_short}... not found for rename")
         return RenameResult(success=False, verification_errors=["Torrent not found"])
@@ -945,7 +1106,7 @@ async def perform_rename(
     current_name = torrent.get("name", "")
 
     # Get files and determine structure
-    files = qbit.get_files(torrent_hash)
+    files = await asyncio.to_thread(qbit.get_files, torrent_hash)
     root_folder = get_root_folder(files)
 
     # Determine what needs to be renamed based on mode
