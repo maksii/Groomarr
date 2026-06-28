@@ -556,6 +556,11 @@ BRACKETED_EPISODE_PATTERN = re.compile(r"\[S(\d+)[\s_]*(E(?:P)?)\s*(\d+)\]", re.
 # Pattern to match season-only identifier: S01, S02, etc.
 SEASON_ONLY_PATTERN = re.compile(r"S(\d+)(?![\s_]*E)", re.IGNORECASE)
 
+# Pattern for an episode-only RANGE envelope with no season token, e.g.
+# "E110-E293", "E01-E32", "E00-E37" — how the indexer names absolute-numbered
+# anime / episode packs. Used to splice in a file's own absolute episode.
+EP_RANGE_PATTERN = re.compile(r"E\d{1,4}\s*[-–—]\s*E?\d{1,4}", re.IGNORECASE)
+
 # Unicode dashes: regular hyphen (-), en-dash (–), em-dash (—)
 DASHES = r"\-\u2013\u2014"
 
@@ -855,6 +860,19 @@ def insert_episode_into_name(new_name: str, episode_info: tuple[str, str, str]) 
         # Replace season-only with full season+episode
         return SEASON_ONLY_PATTERN.sub(full_identifier, new_name, count=1)
 
+    # Episode-range envelope but no season token (absolute-numbered anime, e.g.
+    # "Bleach E110-E293"): replace the range with THIS file's own episode number,
+    # preserving the absolute E-style. Fabricating "SxxExx" here would both
+    # duplicate the envelope AND assert a season the release does not have —
+    # Sonarr maps anime by absolute number, so we keep the absolute number.
+    ep_range_match = EP_RANGE_PATTERN.search(new_name)
+    if ep_range_match:
+        try:
+            abs_ep = f"E{int(episode_num):02d}"
+        except (TypeError, ValueError):
+            abs_ep = f"E{episode_num}"
+        return EP_RANGE_PATTERN.sub(abs_ep, new_name, count=1)
+
     # No season pattern found in title, use season from file's episode_info
     # Build identifier using file's season + episode number
     full_identifier = build_episode_identifier(file_season_num, ep_marker, episode_num)
@@ -872,6 +890,11 @@ def insert_episode_into_name(new_name: str, episode_info: tuple[str, str, str]) 
         match = re.search(pattern, new_name, re.IGNORECASE)
         if match:
             insert_pos = match.start()
+            # If the anchor (typically the year) sits inside parentheses, e.g.
+            # "Series (2017) 1080p", insert BEFORE the opening paren so the id is
+            # not spliced inside them ("Series ( S01E01 2017)" -> wrong).
+            if insert_pos > 0 and new_name[insert_pos - 1] == "(":
+                insert_pos -= 1
             # Insert episode identifier before this match
             prefix = new_name[:insert_pos].rstrip()
             suffix = new_name[insert_pos:]
@@ -926,6 +949,35 @@ def validate_rename_plan(
     if not files:
         return [], []
 
+    # Structure-aware handling for complex packs (multi-season / season+specials
+    # / collection). Imported lazily to avoid a circular import (structure
+    # builds on this module's episode helpers). Simple seasons and movies fall
+    # through to the unchanged logic below, so existing behaviour is preserved.
+    from .structure import LayoutKind, analyze_torrent, build_complex_plan
+
+    layout = analyze_torrent(files)
+    if layout.is_complex:
+        return build_complex_plan(files, new_name, root_folder, preserve_folder, layout)
+
+    # A movie is a SINGLE feature file; fabricating an "SxxExx" for it (e.g. from
+    # a stray number in "100.Meters.2025...AAC2.0...") mislabels it as an episode.
+    # Radarr expects no episode token, so the file just takes the clean release
+    # name. The single-file guard is essential: a multi-file release that merely
+    # *classified* as movie (e.g. episodes the analyzer could not parse) must
+    # still get per-file episodes from the base extractor, or every file would
+    # collapse onto one name.
+    is_movie = layout.kind == LayoutKind.MOVIE and layout.video_count == 1
+
+    # Samples never participate in the rename plan: renaming a sample to the
+    # content's name would collapse it onto the real file (data loss), and
+    # Sonarr/Radarr ignore samples on import anyway. Exclude them up front so the
+    # simple path below plans only real content.
+    sample_paths = {m.path for m in layout.files if m.kind == "sample"}
+    if sample_paths:
+        files = [f for f in files if f.get("name", "") not in sample_paths]
+        if not files:
+            return [], []
+
     warnings: list[str] = []
     rename_plan: list[tuple[str, str]] = []
 
@@ -971,11 +1023,11 @@ def validate_rename_plan(
         old_path = f.get("name", "")
         filename = old_path.rsplit("/", 1)[-1] if "/" in old_path else old_path
 
-        # Try to get episode info from various sources
-        episode_info = extract_episode_identifier(filename)
+        # Try to get episode info from various sources (never for movies).
+        episode_info = None if is_movie else extract_episode_identifier(filename)
 
         # If no standard episode, try batch analysis result
-        if not episode_info and filename in batch_episodes:
+        if not is_movie and not episode_info and filename in batch_episodes:
             episode_num = batch_episodes[filename]
             # Use default season 01 for batch-detected episodes
             episode_info = ("01", "E", episode_num)
@@ -988,6 +1040,7 @@ def validate_rename_plan(
             root_folder,
             episode_override=episode_info,
             preserve_folder=preserve_folder,
+            skip_episode=is_movie,
         )
 
         rename_plan.append((old_path, new_path))
@@ -1061,6 +1114,7 @@ def build_new_file_path(
     root_folder: str | None,
     episode_override: tuple[str, str, str] | None = None,
     preserve_folder: bool = False,
+    skip_episode: bool = False,
 ) -> str:
     """Build new file path based on rename.
 
@@ -1088,8 +1142,13 @@ def build_new_file_path(
     # Get the original filename without path
     original_filename = old_path.rsplit("/", 1)[-1] if "/" in old_path else old_path
 
-    # Use override if provided, otherwise extract from original filename
-    episode_info = episode_override or extract_episode_identifier(original_filename)
+    # Use override if provided, otherwise extract from original filename. A movie
+    # (skip_episode) never gets an episode token, even if its filename carries a
+    # stray number that would otherwise parse as one.
+    if skip_episode:
+        episode_info = None
+    else:
+        episode_info = episode_override or extract_episode_identifier(original_filename)
 
     # Build the file's base name
     if episode_info:
@@ -1330,6 +1389,45 @@ async def perform_rename(
     if files_needing_rename:
         actions.append(f"{len(files_needing_rename)} files")
     logger.info(f"Torrent {hash_short}...: will rename {', '.join(actions)}")
+
+    # Final data-loss gate: never execute a file-rename plan that could destroy
+    # a file. This guards EVERY rename path (simple and complex) — it rejects a
+    # plan where two files collapse onto one target or a target would clobber a
+    # bystander, and refuses cyclic plans rather than risk a partial swap. The
+    # gate runs before any file/folder mutation, so a rejected plan changes
+    # nothing on disk (the torrent display-name rename below is cosmetic).
+    if files_needing_rename:
+        from .structure import order_moves_safely, partition_safe_moves
+
+        current_paths_now = {f.get("name", "") for f in files}
+        # Drop only the individual moves that would destroy data (collapse onto
+        # a shared name, or clobber a bystander); keep every provably-safe move.
+        safe_moves, dropped = partition_safe_moves(files_needing_rename, current_paths_now)
+        for old_path, _new, reason in dropped:
+            logger.warning(
+                f"Torrent {hash_short}...: leaving '{old_path.rsplit('/', 1)[-1]}' "
+                f"unchanged to prevent data loss ({reason})"
+            )
+            result.files_skipped += 1
+
+        # Order the safe moves so none writes over a path still pending as a
+        # source. A residual cycle (practically impossible with clean target
+        # names) is also left unchanged rather than risk a partial swap.
+        ordered, staged = order_moves_safely(safe_moves)
+        if staged:
+            cyclic = {o for o, _ in staged}
+            for old_path in cyclic:
+                logger.warning(
+                    f"Torrent {hash_short}...: leaving '{old_path.rsplit('/', 1)[-1]}' "
+                    f"unchanged (cyclic rename)"
+                )
+                result.files_skipped += 1
+            safe_moves = [(o, n) for o, n in safe_moves if o not in cyclic]
+            ordered, _ = order_moves_safely(safe_moves)
+
+        files_needing_rename = ordered
+        # Verification must only expect the moves we actually execute.
+        rename_plan = ordered
 
     # Rename torrent display name first (this doesn't affect file paths)
     if torrent_needs_rename:

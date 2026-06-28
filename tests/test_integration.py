@@ -609,7 +609,9 @@ class TestPreviewRenameEndpoint:
         assert data["torrent_will_change"] is False
         assert data["new_root_folder"] is None
         assert data["folder_will_change"] is False
-        assert len(data["file_renames"]) == 3
+        # movie.mkv + subs/english.srt are renamed; sample.mkv is excluded
+        # (renaming a sample onto the content name would collapse/lose data)
+        assert len(data["file_renames"]) == 2
         assert data["files_will_change"] > 0
 
     @pytest.mark.asyncio
@@ -632,7 +634,9 @@ class TestPreviewRenameEndpoint:
         assert data["torrent_will_change"] is True
         assert data["new_root_folder"] == "Complete New Name"
         assert data["folder_will_change"] is True
-        assert len(data["file_renames"]) == 3
+        # sample.mkv is excluded from renaming (would collapse onto the content);
+        # movie.mkv + subs/english.srt are renamed, but all 3 files still exist
+        assert len(data["file_renames"]) == 2
         assert data["total_files"] == 3
 
     @pytest.mark.asyncio

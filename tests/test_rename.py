@@ -579,6 +579,46 @@ class TestInsertEpisodeIntoName:
         result = insert_episode_into_name("SeriesX 1080p WEBDL Group", episode_info)
         assert "S02E10" in result
 
+    def test_absolute_episode_range_replaced_not_spliced_into_year(self):
+        """Absolute-numbered anime (episode-range envelope, no season token).
+
+        Regression: the year-insertion fallback used to splice the identifier
+        inside the year parens AND leave the range, producing the malformed
+        ``Bleach E110-E293 ( S01E110 2004-2012)``. The range must instead be
+        replaced by the file's own absolute episode, with no season fabricated.
+        """
+        episode_info = ("01", "E", "110")
+        result = insert_episode_into_name(
+            "Bleach E110-E293 (2004-2012) BluRay 1080p Ukrainian-fanat22012", episode_info
+        )
+        assert result == "Bleach E110 (2004-2012) BluRay 1080p Ukrainian-fanat22012"
+        assert "E110-E293" not in result  # envelope consumed
+        assert "( S01E110" not in result  # not spliced into the year parens
+        assert "S01E110" not in result  # no fabricated season for absolute anime
+
+    def test_absolute_episode_range_two_digit(self):
+        """Two-digit absolute range narrows to the file's own padded episode."""
+        episode_info = ("01", "E", "5")
+        result = insert_episode_into_name(
+            "Candy Candy E01-E32 (1976-1979) DVDRip 720p Ukrainian-fanat22012", episode_info
+        )
+        assert result == "Candy Candy E05 (1976-1979) DVDRip 720p Ukrainian-fanat22012"
+
+    def test_absolute_episode_range_zero_episode(self):
+        """Episode 0 (e.g. a prologue) is preserved, not dropped."""
+        episode_info = ("01", "E", "0")
+        result = insert_episode_into_name(
+            "Mobile Suit Gundam SEED E00-E37 (2002) BluRay 1080p Ukrainian-Gwean", episode_info
+        )
+        assert result == "Mobile Suit Gundam SEED E00 (2002) BluRay 1080p Ukrainian-Gwean"
+
+    def test_season_token_still_wins_over_episode_range(self):
+        """A real season token must still take priority over a bare episode range."""
+        # Title carries S02 plus a stray range; the season branch should win.
+        episode_info = ("01", "E", "07")
+        result = insert_episode_into_name("SeriesX S02 E01-E12 1080p WEBDL", episode_info)
+        assert "S02E07" in result
+
 
 class TestBuildNewFilePathTVSeries:
     """Test build_new_file_path for TV series scenarios."""
@@ -940,6 +980,32 @@ class TestValidateRenamePlan:
         plan, warnings = validate_rename_plan([], "New Name", "Folder")
         assert len(plan) == 0
         assert len(warnings) == 0
+
+    def test_movie_with_stray_number_gets_no_episode(self):
+        """A single-file movie whose filename has a stray number (e.g. "AAC2.0")
+        must NOT get a fabricated SxxExx — Radarr expects no episode token."""
+        files = [{"name": "100.Meters.2025.1080p.BluRay.AAC2.0.x264-SPiLNO.mkv"}]
+        plan, _ = validate_rename_plan(
+            files, "Hyakuemu (2025) BluRay 1080p Ukrainian-Anonymous", None
+        )
+        assert len(plan) == 1
+        new_base = plan[0][1].rsplit("/", 1)[-1]
+        assert new_base == "Hyakuemu (2025) BluRay 1080p Ukrainian-Anonymous.mkv"
+        assert "S01E" not in new_base
+
+    def test_multifile_release_never_collapsed_as_movie(self):
+        """A multi-file episode release the analyzer cannot fully parse (so it may
+        fall to the MOVIE kind) must still get per-file episodes from the base
+        extractor — never have its episodes suppressed and collapse to one name."""
+        files = [
+            {"name": f"Golgo 13 - E0{i} [Ukr] WEB-DLRip [Anime Classic].mkv"} for i in range(1, 6)
+        ]
+        plan, _ = validate_rename_plan(
+            files, "Golgo 13 E01-E05 (2008) WEBRip 1080p Ukrainian-Anonymous", None
+        )
+        new_bases = [p[1].rsplit("/", 1)[-1] for p in plan]
+        assert len(set(new_bases)) == 5  # all distinct — no collapse
+        assert all("E0" in b for b in new_bases)
 
     def test_user_scenario_aku_no_hana(self):
         """Test the exact user scenario that caused the bug.
