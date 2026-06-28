@@ -879,7 +879,7 @@ async def radarr_webhook(request: Request, background_tasks: BackgroundTasks):
         _log_payload_diagnostics("radarr", raw_payload)
         return JSONResponse(
             status_code=422,
-            content={"status": "error", "reason": f"Invalid payload: {str(e)[:200]}"},
+            content={"status": "error", "reason": "Invalid payload structure"},
         )
 
     hash_short = payload.downloadId[:8] if payload.downloadId else "unknown"
@@ -974,7 +974,7 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
         _log_payload_diagnostics("sonarr", raw_payload)
         return JSONResponse(
             status_code=422,
-            content={"status": "error", "reason": f"Invalid payload: {str(e)[:200]}"},
+            content={"status": "error", "reason": "Invalid payload structure"},
         )
 
     download_id = payload.get_download_id()
