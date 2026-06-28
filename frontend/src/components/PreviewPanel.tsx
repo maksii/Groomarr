@@ -233,20 +233,29 @@ export function PreviewPanel({ sample, onSampleChange, result, isFetching }: Pro
       <CardContent className="space-y-4">
         <SampleReleaseForm value={sample} onChange={onSampleChange} />
 
-        {!result ? (
-          <p className="text-sm text-muted-foreground">Enter a release to see the result.</p>
-        ) : errored ? (
-          <Banner tone="destructive" title="Simulation error">
-            {result.errors.join(" ")}
-          </Banner>
-        ) : (
-          <>
-            <Decision result={result} />
-            <TriggerBreakdown result={result} />
-            <RenameResult result={result} />
-            <FileRenames result={result} />
-          </>
-        )}
+        {/* Reserve space and keep the previous result mounted while refreshing so
+            the panel height never collapses between edits (no layout jump). */}
+        <div
+          className={cn(
+            "min-h-[20rem] space-y-4 transition-opacity duration-150",
+            isFetching && result ? "opacity-60" : "opacity-100",
+          )}
+        >
+          {!result ? (
+            <p className="text-sm text-muted-foreground">Enter a release to see the result.</p>
+          ) : errored ? (
+            <Banner tone="destructive" title="Simulation error">
+              {result.errors.join(" ")}
+            </Banner>
+          ) : (
+            <>
+              <Decision result={result} />
+              <TriggerBreakdown result={result} />
+              <RenameResult result={result} />
+              <FileRenames result={result} />
+            </>
+          )}
+        </div>
       </CardContent>
     </Card>
   );

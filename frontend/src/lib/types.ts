@@ -217,15 +217,22 @@ export function emptyTracker(): TrackerConfig {
 }
 
 export function exampleSampleRelease(): SimulateRelease {
-  const title = "Some.Movie.2024.1080p.BluRay.x264-GROUP";
+  // A realistic, high-value scenario: the tracker gives a clean, complete release
+  // title, but the downloaded folder/files are badly named. Groomarr renames the
+  // folder + every file to the proper name while preserving episode numbers —
+  // which is what keeps Sonarr/Radarr matching correctly.
   return {
-    release_title: title,
+    release_title: "Series Name 2026 S01 JAPANESE 1080p CR WEB-DL DD+ 2.0 H.264-ReleaseGroup",
     indexer: "",
-    quality: "Bluray-1080p",
-    release_group: "GROUP",
+    quality: "WEBDL-1080p",
+    release_group: "ReleaseGroup",
     custom_formats: [],
     custom_format_score: null,
     download_client: "",
-    files: [`${title}/${title}.mkv`],
+    files: [
+      "[ReleaseGroup] Series Name 2026/[releasegroup]series.name.01.mkv",
+      "[ReleaseGroup] Series Name 2026/[releasegroup]series.name.02.mkv",
+      "[ReleaseGroup] Series Name 2026/[releasegroup]series.name.03.mkv",
+    ],
   };
 }

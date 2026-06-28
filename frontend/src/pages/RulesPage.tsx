@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
   FileWarning,
@@ -90,6 +90,9 @@ export function RulesPage() {
     queryKey: ["simulate", debouncedSample, debouncedDraft],
     queryFn: () => api.simulate(debouncedSample, debouncedDraft ?? undefined),
     enabled: debouncedDraft !== null,
+    // Keep the previous result on screen while the next one loads, so the panel
+    // never collapses to empty between edits (no layout jump / vh change).
+    placeholderData: keepPreviousData,
   });
 
   function handleSave() {
