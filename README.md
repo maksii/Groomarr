@@ -12,6 +12,7 @@ Fixes infinite download loops (Couldn't add release X from Indexer Y to download
 
 ## Features
 
+- **Web UI**: Manage all rename rules from a modern dashboard — no YAML editing required. Edit global and per-tracker rules, **simulate** how a release would be filtered and renamed (live), and apply changes safely.
 - Receives webhooks from Sonarr/Radarr on Grab events
 - Renames torrents, folders, and files in qBittorrent
 - Configurable trigger filters (indexer, quality, custom formats, etc.)
@@ -19,6 +20,23 @@ Fixes infinite download loops (Couldn't add release X from Indexer Y to download
 - Multiple rename modes (torrent only, folder, files)
 - Handles timing issues with automatic retry/polling
 - **Score validation**: Optionally validates renames against Sonarr/Radarr API to ensure custom format scores aren't negatively impacted
+
+## Web UI
+
+Open `http://<host>:8000/` in a browser to manage Groomarr without touching YAML.
+
+- **Rules** — A single guided workspace: edit the global rule set and per-tracker overrides (trigger filters and rename rules), with inline help on every field, while a **live preview** on the right reacts to every change *before you save*. For an editable test release it shows, in real time:
+  - which tracker matched (or global) and whether the release would be processed,
+  - a per-filter breakdown explaining **why** — including non-title rules like excludes, download client, custom formats, and score,
+  - the resulting torrent/folder name with a step-by-step transformation, and
+  - how the individual **files** would be renamed.
+
+  You can load a real torrent into the preview by hash or tracker ID. Regex patterns are validated as you type. Saving writes `rename_rules.yaml` (backing up the previous file to `.bak`) and reloads automatically.
+- **Tools** — Preview a rename, apply a manual rename, or find a torrent by its tracker ID.
+- **Status** — Connectivity (qBittorrent/Sonarr/Radarr) and the current deployment settings.
+
+> [!WARNING]
+> **Groomarr has no built-in authentication.** Anyone who can reach the port can change rules and trigger renames. Keep it on a trusted/private network or behind an authenticating reverse proxy. Do not expose port 8000 directly to the internet. Set `CONFIG_READONLY=true` to make the UI/API unable to modify rules.
 
 ## Quick Start
 
@@ -78,6 +96,8 @@ docker-compose up -d
 | `SONARR_API_KEY` | `null` | Sonarr API key (Settings → General) |
 | `RADARR_URL` | `null` | Radarr API URL (for score validation) |
 | `RADARR_API_KEY` | `null` | Radarr API key (Settings → General) |
+| `STATIC_DIR` | `frontend/dist` | Directory of the built web UI (set automatically in the Docker image) |
+| `CONFIG_READONLY` | `false` | If `true`, the web UI/API cannot modify `rename_rules.yaml` |
 
 ### Rename Modes
 
@@ -246,12 +266,20 @@ score_validation_policy: "block"  # or "warn"
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/` | GET | Web UI (single-page app) |
 | `/health` | GET | Health check |
 | `/webhook/radarr` | POST | Radarr webhook receiver |
 | `/webhook/sonarr` | POST | Sonarr webhook receiver |
 | `/rename/manual` | POST | Manually rename a torrent by hash |
 | `/rename/preview` | POST | Preview what a rename operation would do without making changes |
+| `/find/torrent` | POST | Find a torrent by its tracker ID (URL or number) |
 | `/reload` | GET | Reload rename rules |
+| `/api/config` | GET / PUT | Read or save rename rules (used by the web UI) |
+| `/api/rules/simulate` | POST | Simulate filtering + renaming for a sample release (trigger breakdown + file renames) |
+| `/api/rules/validate-pattern` | POST | Validate a regex or indexer match pattern |
+| `/api/torrent-sample` | POST | Load a real torrent's name + files into the preview (by hash or tracker ID) |
+| `/api/settings` | GET | Non-sensitive runtime settings |
+| `/api/status` | GET | Service + connectivity status |
 | `/docs` | GET | Swagger API documentation |
 
 ### Manual Rename Endpoint
@@ -404,18 +432,43 @@ docker logs -f groomarr
 ### Run locally
 
 ```bash
-# Install dependencies
+# Install backend dependencies
 pip install -r requirements.txt
 
-# Run
+# Build the web UI (served by FastAPI at /)
+cd frontend && npm ci && npm run build && cd ..
+
+# Run the backend
 python -m uvicorn src.main:app --reload --port 8000
 ```
+
+Then open `http://localhost:8000/`.
+
+### Web UI development
+
+For a fast frontend dev loop with hot-reload, run the Vite dev server alongside the backend. It proxies API/webhook requests to `http://localhost:8000`:
+
+```bash
+# Terminal 1 — backend
+python -m uvicorn src.main:app --reload --port 8000
+
+# Terminal 2 — frontend dev server (http://localhost:5173)
+cd frontend
+npm install
+npm run dev
+```
+
+Build a production bundle with `npm run build` (runs `tsc` type-checking, then Vite). The Docker image builds this automatically in a multi-stage build.
 
 ### Run tests
 
 ```bash
+# Backend
 pip install pytest
 pytest tests/ -v
+
+# Frontend type-check + build
+cd frontend && npm run build
 ```
 
 ## Requirements

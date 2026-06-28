@@ -1,6 +1,11 @@
 """Pydantic models for Sonarr and Radarr webhook payloads."""
 
-from pydantic import BaseModel, ConfigDict, Field
+import re
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .config import regex_match_body
 
 # =============================================================================
 # Radarr Models
@@ -226,3 +231,293 @@ class FindTorrentResponse(BaseModel):
     torrent_id: str = Field(..., description="The torrent ID that was searched")
     torrent_hash: str | None = Field(default=None, description="Torrent hash if found")
     reason: str | None = Field(default=None, description="Error or not found reason")
+
+
+# =============================================================================
+# Rules Management Models (web UI / config API)
+# =============================================================================
+
+# Filter list fields whose entries are interpreted as regular expressions.
+# (customformats_* use exact membership, not regex, so are excluded.)
+_REGEX_LIST_FIELDS = (
+    "indexers_include",
+    "indexers_exclude",
+    "qualities_include",
+    "qualities_exclude",
+    "download_clients_include",
+    "download_clients_exclude",
+    "release_groups_include",
+    "release_groups_exclude",
+    "remove_patterns",
+    "skip_title_patterns",
+)
+
+
+class RuleSet(BaseModel):
+    """A set of trigger filters + rename rules (global defaults or per-tracker).
+
+    Mirrors :class:`src.config.TrackerRules`. Regex-bearing fields are validated
+    so the UI can surface bad patterns before they are saved.
+    """
+
+    # Trigger filters
+    indexers_include: list[str] = Field(default_factory=list)
+    indexers_exclude: list[str] = Field(default_factory=list)
+    qualities_include: list[str] = Field(default_factory=list)
+    qualities_exclude: list[str] = Field(default_factory=list)
+    customformats_require_any: list[str] = Field(default_factory=list)
+    customformats_exclude: list[str] = Field(default_factory=list)
+    min_customformat_score: int | None = None
+    download_clients_include: list[str] = Field(default_factory=list)
+    download_clients_exclude: list[str] = Field(default_factory=list)
+    release_groups_include: list[str] = Field(default_factory=list)
+    release_groups_exclude: list[str] = Field(default_factory=list)
+
+    # Rename rules
+    prefix: str = ""
+    suffix: str = ""
+    remove_patterns: list[str] = Field(default_factory=list)
+    replace_patterns: dict[str, str] = Field(default_factory=dict)
+    skip_title_patterns: list[str] = Field(default_factory=list)
+
+    # Score validation
+    validate_custom_format_score: bool = False
+    score_validation_policy: Literal["block", "warn"] = "block"
+
+    @field_validator(*_REGEX_LIST_FIELDS)
+    @classmethod
+    def _validate_regex_lists(cls, v: list[str]) -> list[str]:
+        for i, pattern in enumerate(v):
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise ValueError(f"invalid regex at position {i + 1} ('{pattern}'): {e}") from e
+        return v
+
+    @field_validator("replace_patterns")
+    @classmethod
+    def _validate_replace_keys(cls, v: dict[str, str]) -> dict[str, str]:
+        for pattern in v:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise ValueError(f"invalid replace pattern '{pattern}': {e}") from e
+        return v
+
+    @model_validator(mode="after")
+    def _bound_pattern_sizes(self) -> "RuleSet":
+        """Cap pattern count and length (defense-in-depth against abuse / ReDoS)."""
+        max_items, max_len = 1000, 2000
+        list_fields = (
+            self.indexers_include,
+            self.indexers_exclude,
+            self.qualities_include,
+            self.qualities_exclude,
+            self.customformats_require_any,
+            self.customformats_exclude,
+            self.download_clients_include,
+            self.download_clients_exclude,
+            self.release_groups_include,
+            self.release_groups_exclude,
+            self.remove_patterns,
+            self.skip_title_patterns,
+        )
+        total = sum(len(f) for f in list_fields) + len(self.replace_patterns)
+        if total > max_items:
+            raise ValueError(f"too many patterns ({total}); maximum is {max_items}")
+        for field in list_fields:
+            for item in field:
+                if len(item) > max_len:
+                    raise ValueError(f"pattern too long ({len(item)} chars); maximum is {max_len}")
+        for key, value in self.replace_patterns.items():
+            if len(key) > max_len or len(value) > max_len:
+                raise ValueError(f"replace pattern too long; maximum is {max_len} chars")
+        return self
+
+
+class TrackerConfigModel(BaseModel):
+    """A tracker-specific configuration: match patterns + its rule set."""
+
+    name: str = Field(default="", description="Friendly name for this tracker config")
+    match: list[str] = Field(
+        default_factory=list,
+        description="Indexer match patterns (exact, wildcard, or /regex/)",
+    )
+    rules: RuleSet = Field(default_factory=RuleSet)
+
+    @field_validator("match")
+    @classmethod
+    def _validate_match(cls, v: list[str]) -> list[str]:
+        for pattern in v:
+            # Only /regex/ (or /regex/i) forms are compiled; exact and glob always parse.
+            body = regex_match_body(pattern)
+            if body is not None:
+                try:
+                    re.compile(body)
+                except re.error as e:
+                    raise ValueError(f"invalid regex match '{pattern}': {e}") from e
+        return v
+
+
+class RulesConfig(BaseModel):
+    """Full rules configuration: global defaults + ordered tracker overrides."""
+
+    global_: RuleSet = Field(default_factory=RuleSet, alias="global")
+    trackers: list[TrackerConfigModel] = Field(default_factory=list)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ConfigMeta(BaseModel):
+    """Metadata about the loaded configuration file."""
+
+    config_path: str
+    config_found: bool
+    config_error: str | None = None
+    config_format: Literal["hierarchical", "flat", "empty", "missing"] = "empty"
+    readonly: bool = False
+
+
+class ConfigResponse(BaseModel):
+    """Response for GET /api/config."""
+
+    meta: ConfigMeta
+    config: RulesConfig
+
+
+class SaveConfigResponse(BaseModel):
+    """Response for PUT /api/config."""
+
+    status: str = "ok"
+    warnings: list[str] = Field(default_factory=list)
+    meta: ConfigMeta
+    config: RulesConfig
+
+
+class SimulateRelease(BaseModel):
+    """A sample release used to simulate rule behavior."""
+
+    release_title: str = Field(default="", max_length=2000)
+    indexer: str = Field(default="", max_length=500)
+    quality: str = Field(default="", max_length=200)
+    release_group: str = Field(default="", max_length=200)
+    custom_formats: list[str] = Field(default_factory=list, max_length=100)
+    custom_format_score: int | None = None
+    download_client: str = Field(default="", max_length=200)
+    # Optional sample files to preview how individual files would be renamed.
+    files: list[str] = Field(default_factory=list, max_length=500)
+
+
+class SimulateRequest(BaseModel):
+    """Request for POST /api/rules/simulate.
+
+    If ``config`` is omitted, the currently-saved rules are used. Providing a
+    draft config lets the UI preview unsaved edits.
+    """
+
+    release: SimulateRelease
+    config: RulesConfig | None = None
+
+
+class SimulateStep(BaseModel):
+    """A single recorded transformation step in the rename trace."""
+
+    rule: str
+    before: str
+    after: str
+    error: str | None = None
+
+
+class FilterCheck(BaseModel):
+    """One trigger-filter check in the simulation breakdown."""
+
+    label: str
+    tested: str
+    passed: bool
+    detail: str
+    blocking: bool = False
+
+
+class SimulateResponse(BaseModel):
+    """Response for POST /api/rules/simulate."""
+
+    status: str = "ok"
+    matched_tracker: str | None = None
+    used_global: bool = True
+    would_process: bool = False
+    skip_reason: str = ""
+    original_title: str = ""
+    new_title: str = ""
+    changed: bool = False
+    steps: list[SimulateStep] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    # Per-filter breakdown explaining the decision (incl. non-title filters)
+    trigger_checks: list[FilterCheck] = Field(default_factory=list)
+    # Preview of how sample files would be renamed
+    file_renames: list[FileRenamePreview] = Field(default_factory=list)
+    file_warnings: list[str] = Field(default_factory=list)
+    root_folder: str | None = None
+
+
+class TorrentSampleRequest(BaseModel):
+    """Request for POST /api/torrent-sample (load a real torrent into the preview)."""
+
+    query: str = Field(..., max_length=2000, description="Torrent hash, or tracker ID/URL")
+
+
+class TorrentSampleResponse(BaseModel):
+    """Response for POST /api/torrent-sample."""
+
+    status: str  # ok | not_found | error
+    title: str | None = None
+    files: list[str] = Field(default_factory=list)
+    reason: str | None = None
+
+
+class ValidatePatternRequest(BaseModel):
+    """Request for POST /api/rules/validate-pattern."""
+
+    pattern: str = Field(..., max_length=2000)
+    kind: Literal["regex", "match"] = "regex"
+
+
+class ValidatePatternResponse(BaseModel):
+    """Response for POST /api/rules/validate-pattern."""
+
+    valid: bool
+    kind: Literal["regex", "match"]
+    interpreted: str | None = None  # for match: exact | wildcard | regex
+    error: str | None = None
+
+
+class SettingsView(BaseModel):
+    """Non-sensitive runtime settings exposed to the UI (never secrets)."""
+
+    rename_mode: str
+    dry_run: bool
+    initial_delay: float
+    max_retries: int
+    retry_delay: float
+    api_operation_delay_ms: int
+    log_level: str
+    log_format: str
+    rules_file: str
+    config_readonly: bool
+    qbittorrent_url: str
+    sonarr_configured: bool
+    radarr_configured: bool
+
+
+class StatusView(BaseModel):
+    """Service status + connectivity for the UI."""
+
+    status: str
+    version: str
+    qbittorrent: str
+    sonarr: str | None = None
+    radarr: str | None = None
+    dry_run: bool
+    score_validation: bool
+    config_found: bool
+    config_error: str | None = None
+    readonly: bool = False
