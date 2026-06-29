@@ -11,9 +11,11 @@ import {
   ListChecks,
   RotateCcw,
   Undo2,
+  Wrench,
   XCircle,
 } from "lucide-react";
 import { type ReactNode, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Banner } from "@/components/ui/banner";
@@ -25,12 +27,16 @@ import { api } from "@/lib/api";
 import {
   absoluteTime,
   decisionTone,
+  expectsRename,
+  formatBytes,
+  isRenameOutcome,
   layoutLabel,
   relativeTime,
   sourceMeta,
   statusMeta,
+  torrentStateMeta,
 } from "@/lib/operations";
-import type { OperationDetail, RollbackPreviewResponse } from "@/lib/types";
+import type { LiveTorrentState, OperationDetail, RollbackPreviewResponse } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { RenameDiff } from "./RenameDiff";
 
@@ -117,10 +123,25 @@ function DetailBody({ id }: { id: number }) {
 }
 
 function OperationView({ op }: { op: OperationDetail }) {
+  const navigate = useNavigate();
   const sm = statusMeta(op.status);
   const src = sourceMeta(op.source);
   const SrcIcon = src.icon;
   const StatusIcon = sm.icon;
+
+  // Pre-fill the Tools page with this torrent so the user can preview / re-run a
+  // manual rename. Prefer the groomed name; fall back to the raw release title.
+  const toolsName = op.new_name || op.release_title || "";
+  function openInTools() {
+    const params = new URLSearchParams({ hash: op.torrent_hash, tab: "preview" });
+    if (toolsName) params.set("name", toolsName);
+    if (op.rename_mode) params.set("mode", op.rename_mode);
+    navigate(`/tools?${params.toString()}`);
+  }
+
+  const showRename =
+    isRenameOutcome(op.status) &&
+    Boolean(op.old_name || op.folder_old || op.folder_new || op.file_changes.length > 0);
 
   return (
     <div className="space-y-4">
@@ -160,11 +181,11 @@ function OperationView({ op }: { op: OperationDetail }) {
         <Meta label="Rename mode">
           <span className="font-mono text-xs">{op.rename_mode || "—"}</span>
         </Meta>
-        <Meta label="Files">
-          {op.files_renamed > 0 || op.files_total > 0
-            ? `${op.files_renamed}/${op.files_total} renamed`
-            : "—"}
-        </Meta>
+        {op.files_total > 0 || op.files_renamed > 0 ? (
+          <Meta label="Files renamed">
+            {op.files_renamed}/{op.files_total}
+          </Meta>
+        ) : null}
         {op.torrent_hash ? (
           <div className="col-span-2 flex flex-col gap-0.5 sm:col-span-3">
             <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -174,6 +195,18 @@ function OperationView({ op }: { op: OperationDetail }) {
           </div>
         ) : null}
       </div>
+
+      {/* Quick actions */}
+      {op.torrent_hash ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="outline" onClick={openInTools}>
+            <Wrench className="h-4 w-4" /> Open in Tools
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            Pre-fills the hash{toolsName ? " & name" : ""} to preview and run a manual rename.
+          </span>
+        </div>
+      ) : null}
 
       {/* Decision + skip reason */}
       {op.decision === "skipped" && op.skip_reason ? (
@@ -267,8 +300,10 @@ function OperationView({ op }: { op: OperationDetail }) {
         </Section>
       ) : null}
 
-      {/* Rename visualization */}
-      {op.old_name || op.new_name || op.folder_old || op.file_changes.length > 0 ? (
+      {/* Rename visualization — only for operations that actually renamed (or
+          planned to). Skipped webhooks record a would-be name but never touched
+          the torrent, so a before → after diff there would be misleading. */}
+      {showRename ? (
         <div className="space-y-3">
           <div className="flex items-center gap-2 text-sm font-medium">
             <ArrowRight className="h-4 w-4 text-muted-foreground" />
@@ -319,6 +354,33 @@ function OperationView({ op }: { op: OperationDetail }) {
   );
 }
 
+/** The torrent's live download status: a state badge + percentage + progress bar. */
+function LiveStatus({ live }: { live: LiveTorrentState }) {
+  const meta = torrentStateMeta(live.state, live.progress);
+  const pct = meta.percent;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-muted-foreground">Status:</span>
+        <Badge tone={meta.tone} title={live.state || undefined}>
+          {meta.label}
+          {meta.label === "Downloading" && pct != null ? ` · ${pct}%` : ""}
+        </Badge>
+        {live.size ? <span className="text-muted-foreground">{formatBytes(live.size)}</span> : null}
+        {pct != null ? <span className="ml-auto font-mono text-muted-foreground">{pct}%</span> : null}
+      </div>
+      {pct != null ? (
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className={cn("h-full rounded-full", pct >= 100 ? "bg-success" : "bg-primary")}
+            style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function LiveState({ op }: { op: OperationDetail }) {
   const live = op.live;
   if (!live) return null;
@@ -329,20 +391,40 @@ function LiveState({ op }: { op: OperationDetail }) {
       </Banner>
     );
   }
+
+  // Drift detection (does the torrent still carry Groomarr's name?) is only
+  // meaningful when this operation actually applied a rename. For a skipped /
+  // queued / dry-run op, `matches_rename` is comparing against a name that was
+  // never written, so we suppress the matches/drifted verdict entirely.
+  const showDrift = expectsRename(op.status);
+  const drifted = showDrift && !live.matches_rename;
+  const headerStatus = torrentStateMeta(live.state, live.progress);
+  const headerLabel =
+    headerStatus.label === "Downloading" && headerStatus.percent != null
+      ? `Downloading ${headerStatus.percent}%`
+      : headerStatus.label;
+
   return (
     <Section
       icon={<Database className="h-4 w-4" />}
       title="Current state in qBittorrent"
       count={
-        live.torrent_exists ? (
-          <Badge tone={live.matches_rename ? "success" : "warning"}>
-            {live.matches_rename ? "matches" : "drifted"}
-          </Badge>
-        ) : (
+        !live.torrent_exists ? (
           <Badge tone="destructive">gone</Badge>
+        ) : (
+          <span className="flex items-center gap-1.5">
+            <Badge tone={headerStatus.tone} title={live.state || undefined}>
+              {headerLabel}
+            </Badge>
+            {showDrift ? (
+              <Badge tone={live.matches_rename ? "success" : "warning"}>
+                {live.matches_rename ? "matches" : "drifted"}
+              </Badge>
+            ) : null}
+          </span>
         )
       }
-      defaultOpen={!live.torrent_exists || !live.matches_rename}
+      defaultOpen={!live.torrent_exists || drifted}
     >
       {!live.torrent_exists ? (
         <p className="text-xs text-muted-foreground">
@@ -350,11 +432,12 @@ function LiveState({ op }: { op: OperationDetail }) {
         </p>
       ) : (
         <div className="space-y-2 text-xs">
+          <LiveStatus live={live} />
           <div>
             <span className="text-muted-foreground">Current name: </span>
             <span className="break-all font-mono">{live.torrent_name}</span>
           </div>
-          {!live.matches_rename ? (
+          {drifted ? (
             <div className="flex items-start gap-1.5 text-warning">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <span>

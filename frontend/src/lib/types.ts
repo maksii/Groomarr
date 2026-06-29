@@ -275,6 +275,9 @@ export interface LiveTorrentState {
   root_folder: string | null;
   files: string[];
   matches_rename: boolean;
+  state: string;
+  progress: number | null;
+  size: number | null;
   note: string;
 }
 

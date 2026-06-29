@@ -485,6 +485,16 @@ def _extract_applied(
     return applied_torrent, applied_folder, applied_files
 
 
+def _torrent_field(torrent: object, key: str, default: object = None) -> object:
+    """Read a field from a qBittorrent torrent (dict-like or attribute-style)."""
+    if hasattr(torrent, "get"):
+        try:
+            return torrent.get(key, default)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - never let a missing field break the detail view
+            return default
+    return getattr(torrent, key, default)
+
+
 async def _live_state(torrent_hash: str) -> LiveTorrentState:
     """Fetch the torrent's CURRENT state from qBittorrent (full file list, no cap)."""
     from . import main  # lazy import to avoid a circular import at module load
@@ -505,13 +515,29 @@ async def _live_state(torrent_hash: str) -> LiveTorrentState:
     files = await run_in_threadpool(qbit.get_files, torrent_hash)
     names = [f.get("name", "") for f in files if f.get("name")]
     root = get_root_folder(files)
-    name = torrent.get("name", "") if hasattr(torrent, "get") else getattr(torrent, "name", "")
+    name = _torrent_field(torrent, "name", "") or ""
+    state = _torrent_field(torrent, "state", "") or ""
+    raw_progress = _torrent_field(torrent, "progress", None)
+    raw_size = _torrent_field(torrent, "size", None)
+    if raw_size is None:
+        raw_size = _torrent_field(torrent, "total_size", None)
+    try:
+        progress = float(raw_progress) if raw_progress is not None else None
+    except (TypeError, ValueError):
+        progress = None
+    try:
+        size = int(raw_size) if raw_size is not None else None
+    except (TypeError, ValueError):
+        size = None
     return LiveTorrentState(
         checked=True,
         torrent_exists=True,
         torrent_name=name or None,
         root_folder=root,
         files=names,
+        state=str(state),
+        progress=progress,
+        size=size,
     )
 
 

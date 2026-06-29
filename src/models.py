@@ -595,6 +595,11 @@ class LiveTorrentState(BaseModel):
     root_folder: str | None = None
     files: list[str] = Field(default_factory=list)
     matches_rename: bool = False  # current torrent name still equals the renamed value
+    # Live download status, so the dashboard can show whether the torrent is still
+    # downloading, completed, seeding, paused, etc. (purely informational).
+    state: str = ""  # raw qBittorrent state (e.g. uploading, stalledUP, pausedDL)
+    progress: float | None = None  # download completion in [0.0, 1.0]
+    size: int | None = None  # total size in bytes
     note: str = ""
 
 

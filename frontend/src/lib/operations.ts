@@ -113,6 +113,87 @@ export function decisionTone(decision: string): Tone {
   return "muted";
 }
 
+// Statuses where Groomarr actually executed or planned a rename, so the
+// before → after diff and the "files renamed" count are meaningful. A *skipped*
+// webhook never touched the torrent (it only records the name it *would* have
+// produced), so showing a rename diff for it is misleading.
+const RENAME_OUTCOME_STATUSES = new Set([
+  "renamed",
+  "no_change",
+  "dry_run",
+  "rolled_back",
+  "failed",
+]);
+
+/** Whether this operation represents an executed/planned rename (vs. a skip). */
+export function isRenameOutcome(status: string): boolean {
+  return RENAME_OUTCOME_STATUSES.has(status);
+}
+
+/**
+ * Whether the live torrent is *expected* to still carry the renamed value, so
+ * the "matches / drifted" drift-detection verdict applies. Only true for
+ * operations that successfully applied the new name (not dry runs or rollbacks,
+ * where the live name intentionally differs from `new_name`).
+ */
+export function expectsRename(status: string): boolean {
+  return status === "renamed" || status === "no_change";
+}
+
+// --- Live torrent download status (qBittorrent `state` + `progress`) ---
+
+const DL_STATES = new Set([
+  "downloading",
+  "metaDL",
+  "stalledDL",
+  "forcedDL",
+  "queuedDL",
+  "allocating",
+]);
+const UP_STATES = new Set(["uploading", "stalledUP", "forcedUP", "queuedUP"]);
+const PAUSED_STATES = new Set(["pausedUP", "pausedDL", "stoppedUP", "stoppedDL"]);
+const ERROR_STATES = new Set(["error", "missingFiles"]);
+const CHECK_STATES = new Set(["checkingUP", "checkingDL", "checkingResumeData"]);
+
+export interface TorrentStateMeta {
+  label: string;
+  tone: Tone;
+  percent: number | null;
+}
+
+/** Map a qBittorrent torrent state + progress to a friendly status label/tone. */
+export function torrentStateMeta(state: string, progress: number | null): TorrentStateMeta {
+  const percent = progress != null ? Math.round(progress * 100) : null;
+  const complete = percent != null && percent >= 100;
+
+  if (ERROR_STATES.has(state)) {
+    return { label: state === "missingFiles" ? "Missing files" : "Error", tone: "destructive", percent };
+  }
+  if (CHECK_STATES.has(state)) return { label: "Checking", tone: "muted", percent };
+  if (state === "moving") return { label: "Moving", tone: "muted", percent };
+  if (PAUSED_STATES.has(state)) {
+    return { label: complete ? "Paused · complete" : "Paused", tone: "muted", percent };
+  }
+  if (UP_STATES.has(state) || complete) {
+    return { label: "Completed", tone: "success", percent: percent ?? 100 };
+  }
+  if (DL_STATES.has(state)) return { label: "Downloading", tone: "primary", percent };
+  return { label: state || "Unknown", tone: "default", percent };
+}
+
+/** Human-readable byte size (e.g. "1.4 GB"). Returns "—" for missing/zero. */
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null || bytes <= 0) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(value >= 100 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
 export const SOURCE_OPTIONS = [
   { value: "", label: "All sources" },
   { value: "sonarr", label: "Sonarr" },

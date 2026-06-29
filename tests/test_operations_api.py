@@ -36,7 +36,8 @@ class StatefulQbit:
     def _torrent(self):
         t = MagicMock()
         t.name = self.name
-        t.get = lambda k, d=None: {"name": self.name}.get(k, d)
+        fields = {"name": self.name, "state": "stalledUP", "progress": 1.0, "size": 1234567}
+        t.get = lambda k, d=None: fields.get(k, d)
         return t
 
     async def wait_for_torrent(self, **kwargs):
@@ -139,6 +140,10 @@ class TestOperationsListAndStats:
         assert detail["live"]["checked"] is True
         assert detail["live"]["torrent_exists"] is True
         assert detail["live"]["matches_rename"] is True
+        # Live download status is surfaced for the UI (state + progress + size).
+        assert detail["live"]["state"] == "stalledUP"
+        assert detail["live"]["progress"] == 1.0
+        assert detail["live"]["size"] == 1234567
         assert detail["can_rollback"] is True
         # decision/trigger detail present
         assert isinstance(detail["trigger_checks"], list)
