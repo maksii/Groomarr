@@ -38,6 +38,7 @@ import {
 } from "@/lib/operations";
 import type { LiveTorrentState, OperationDetail, RollbackPreviewResponse } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { FileChanges } from "./FileChanges";
 import { RenameDiff } from "./RenameDiff";
 
 export function OperationDetailDialog({
@@ -332,14 +333,11 @@ function OperationView({ op }: { op: OperationDetail }) {
               count={<Badge tone="muted">{op.file_changes.length}</Badge>}
               defaultOpen={op.file_changes.length <= 12}
             >
-              <ul className="space-y-2">
-                {op.file_changes.map((f, i) => (
-                  // biome-ignore lint: positional list
-                  <li key={i}>
-                    <RenameDiff from={f.old_path} to={f.new_path} />
-                  </li>
-                ))}
-              </ul>
+              <FileChanges
+                changes={op.file_changes}
+                rootOld={op.folder_old}
+                rootNew={op.folder_new}
+              />
             </Section>
           ) : null}
         </div>
