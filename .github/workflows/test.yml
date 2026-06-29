@@ -2,11 +2,13 @@ name: Tests
 
 on:
   push:
+    # '**' matches branch names containing '/' (e.g. feat/foo); '*' does not.
     branches:
-      - '*'
+      - '**'
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 # Minimal default permissions for the GITHUB_TOKEN (principle of least privilege).
 permissions:

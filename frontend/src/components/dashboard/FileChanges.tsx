@@ -1,0 +1,105 @@
+import { Folder } from "lucide-react";
+import type { OperationFileChange } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { RenameDiff } from "./RenameDiff";
+
+interface GroupedFile {
+  oldBase: string;
+  newBase: string;
+}
+
+export interface FileChangeGroup {
+  oldDir: string;
+  newDir: string;
+  dirChanged: boolean;
+  files: GroupedFile[];
+}
+
+/** Split a relative path into its parent directory and final segment. */
+function splitPath(p: string): { dir: string; base: string } {
+  const i = p.lastIndexOf("/");
+  return i === -1 ? { dir: "", base: p } : { dir: p.slice(0, i), base: p.slice(i + 1) };
+}
+
+/**
+ * Group file renames by their parent folder, preserving first-seen order. Files
+ * that share the same old → new directory land in one group, so a multi-season
+ * pack (files spread across several folders) naturally splits into one group per
+ * folder while a flat season collapses into a single group.
+ */
+export function groupFileChanges(changes: OperationFileChange[]): FileChangeGroup[] {
+  const groups: FileChangeGroup[] = [];
+  const byKey = new Map<string, FileChangeGroup>();
+  for (const c of changes) {
+    const o = splitPath(c.old_path);
+    const n = splitPath(c.new_path);
+    const key = JSON.stringify([o.dir, n.dir]);
+    let g = byKey.get(key);
+    if (!g) {
+      g = { oldDir: o.dir, newDir: n.dir, dirChanged: o.dir !== n.dir, files: [] };
+      byKey.set(key, g);
+      groups.push(g);
+    }
+    g.files.push({ oldBase: o.base, newBase: n.base });
+  }
+  return groups;
+}
+
+/**
+ * An operation's file renames, grouped by folder. The folder is shown once per
+ * group and only the filename difference is shown beneath it. When every file
+ * sits in the single root folder that's already shown above (the common case),
+ * the redundant folder header is dropped and just the filenames are rendered.
+ */
+export function FileChanges({
+  changes,
+  rootOld,
+  rootNew,
+}: {
+  changes: OperationFileChange[];
+  rootOld: string | null;
+  rootNew: string | null;
+}) {
+  const groups = groupFileChanges(changes);
+  const single = groups.length === 1;
+
+  function showHeader(g: FileChangeGroup): boolean {
+    // A single group whose folder is the root already shown above, or files that
+    // sit at the torrent root, need no folder header — just show the filenames.
+    if (single && !g.oldDir && !g.newDir) return false;
+    if (single && g.oldDir === (rootOld ?? "") && g.newDir === (rootNew ?? "")) return false;
+    return true;
+  }
+
+  return (
+    <div className="space-y-4">
+      {groups.map((g, gi) => {
+        const header = showHeader(g);
+        return (
+          // biome-ignore lint: positional list
+          <div key={gi} className="space-y-2">
+            {header ? (
+              <div className="space-y-1">
+                <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  <Folder className="h-3.5 w-3.5" />
+                  {g.dirChanged ? "Folder renamed" : "Folder"}
+                </div>
+                <RenameDiff from={g.oldDir} to={g.newDir} />
+              </div>
+            ) : null}
+            <ul
+              className={cn("space-y-2", header && "ml-1 border-l border-border/60 pl-3 sm:pl-4")}
+            >
+              {g.files.map((f, fi) => (
+                // biome-ignore lint: positional list
+                <li key={fi}>
+                  <RenameDiff from={f.oldBase} to={f.newBase} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+    </div>
+  );
+}

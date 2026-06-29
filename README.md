@@ -13,6 +13,7 @@ Fixes infinite download loops (Couldn't add release X from Indexer Y to download
 ## Features
 
 - **Web UI**: Manage all rename rules from a modern dashboard — no YAML editing required. Edit global and per-tracker rules, **simulate** how a release would be filtered and renamed (live), and apply changes safely.
+- **Operations dashboard**: A searchable, filterable audit log of every received webhook, decision, and rename. Drill into any operation for a clear before → after of the torrent/folder/files, see its current live state in qBittorrent, and **safely roll back** a rename (verified, no data loss).
 - Receives webhooks from Sonarr/Radarr on Grab events
 - Renames torrents, folders, and files in qBittorrent
 - Configurable trigger filters (indexer, quality, custom formats, etc.)
@@ -23,8 +24,13 @@ Fixes infinite download loops (Couldn't add release X from Indexer Y to download
 
 ## Web UI
 
-Open `http://<host>:8000/` in a browser to manage Groomarr without touching YAML.
+Open `http://<host>:8000/` in a browser to manage Groomarr without touching YAML. The **Dashboard** is the default landing tab.
 
+- **Dashboard** — A live overview plus a searchable, filterable **log of every operation**: each received webhook, the trigger decision (processed vs. skipped, and *why*), which rename rule changed the name, and the resulting torrent/folder/file renames. KPI cards summarise activity (renamed / skipped / failed / rolled back) and double as quick filters. Open any entry to see:
+  - the full per-filter trigger breakdown and step-by-step rename rule trace,
+  - a clear **before → after** of the torrent name, root folder, and every file (with correct per-season episode numbers on multi-season packs),
+  - the torrent's **current live state** in qBittorrent — its download status (downloading %, completed, seeding, paused), whether it still exists, and whether it still carries the name Groomarr gave it (drift detection, shown only for renames), plus a one-click jump to **Tools** with the hash and name pre-filled to preview or re-run a manual rename, and
+  - a one-click **rollback** that safely reverses the rename. Rollback is *verified against live state* and runs the same data-loss safety gate as a normal rename: anything that changed since is skipped rather than overwritten, so a rollback never loses a file. The history is stored in a small SQLite database on the `/config` volume.
 - **Rules** — A single guided workspace: edit the global rule set and per-tracker overrides (trigger filters and rename rules), with inline help on every field, while a **live preview** on the right reacts to every change *before you save*. For an editable test release it shows, in real time:
   - which tracker matched (or global) and whether the release would be processed,
   - a per-filter breakdown explaining **why** — including non-title rules like excludes, download client, custom formats, and score,
@@ -98,6 +104,9 @@ docker-compose up -d
 | `RADARR_API_KEY` | `null` | Radarr API key (Settings → General) |
 | `STATIC_DIR` | `frontend/dist` | Directory of the built web UI (set automatically in the Docker image) |
 | `CONFIG_READONLY` | `false` | If `true`, the web UI/API cannot modify `rename_rules.yaml` |
+| `HISTORY_DB` | _(next to rules file)_ | Path to the operation-history SQLite database. Defaults to `groomarr_history.db` beside `rename_rules.yaml`, so the same `/config` volume persists it across restarts. |
+| `HISTORY_RETENTION_DAYS` | `0` | Delete operation-history rows older than N days (`0` = keep forever). |
+| `HISTORY_RETENTION_MAX_ROWS` | `10000` | Keep at most N most-recent operation-history rows (`0` = unlimited). |
 
 ### Rename Modes
 

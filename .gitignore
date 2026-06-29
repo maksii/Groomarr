@@ -67,6 +67,12 @@ ENV/
 config/rename_rules.yaml
 config/rename_rules.yaml.bak
 
+# Operation history database (runtime data, lives on the mounted volume)
+groomarr_history.db
+groomarr_history.db-wal
+groomarr_history.db-shm
+config/groomarr_history.db*
+
 # Frontend
 frontend/node_modules/
 frontend/dist/

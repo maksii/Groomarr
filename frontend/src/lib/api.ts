@@ -2,8 +2,14 @@ import type {
   ConfigResponse,
   FindTorrentResponse,
   ManualRenameResponse,
+  OperationDetail,
+  OperationListParams,
+  OperationListResponse,
+  OperationStats,
   PreviewRenameResponse,
   RenameMode,
+  RollbackPreviewResponse,
+  RollbackResponse,
   RulesConfig,
   SaveConfigResponse,
   SettingsView,
@@ -13,6 +19,16 @@ import type {
   TorrentSampleResponse,
   ValidatePatternResponse,
 } from "./types";
+
+/** Build a query string from defined, non-empty params. */
+function qs(params: Record<string, string | number | undefined | null>): string {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") sp.set(k, String(v));
+  }
+  const s = sp.toString();
+  return s ? `?${s}` : "";
+}
 
 interface ValidationDetail {
   loc?: (string | number)[];
@@ -132,4 +148,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ torrent_id }),
     }),
+
+  // Operations history (dashboard)
+  listOperations: (params: OperationListParams) =>
+    request<OperationListResponse>(
+      `/api/operations${qs(params as Record<string, string | number | undefined | null>)}`,
+    ),
+
+  getOperationStats: () => request<OperationStats>("/api/operations/stats"),
+
+  getOperation: (id: number) => request<OperationDetail>(`/api/operations/${id}`),
+
+  rollbackPreview: (id: number) =>
+    request<RollbackPreviewResponse>(`/api/operations/${id}/rollback/preview`, { method: "POST" }),
+
+  rollback: (id: number) =>
+    request<RollbackResponse>(`/api/operations/${id}/rollback`, { method: "POST" }),
 };

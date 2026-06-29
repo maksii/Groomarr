@@ -28,6 +28,17 @@ class RenameResult:
     verification_passed: bool = True
     verification_errors: list[str] = field(default_factory=list)
 
+    # Executed plan (for the audit log + safe rollback). These record exactly what
+    # was changed on disk so a later rollback can reverse it: the torrent/folder
+    # ``(old, new)`` pairs that were applied, and the FINAL ``(old_path, new_path)``
+    # file moves (new_path already reflects any folder rename). Empty/None when the
+    # corresponding element was not renamed. Purely additive — they never affect
+    # control flow or success semantics.
+    applied_torrent_rename: tuple[str, str] | None = None
+    applied_folder_rename: tuple[str, str] | None = None
+    applied_file_renames: list[tuple[str, str]] = field(default_factory=list)
+    layout_kind: str | None = None
+
     @property
     def total_files_processed(self) -> int:
         return self.files_renamed + self.files_failed + self.files_skipped
@@ -1306,6 +1317,14 @@ async def perform_rename(
     files = await asyncio.to_thread(qbit.get_files, torrent_hash)
     root_folder = get_root_folder(files)
 
+    # Record the detected layout for the audit log (purely informational here).
+    try:
+        from .structure import analyze_torrent
+
+        result.layout_kind = analyze_torrent(files).kind.value
+    except Exception:  # noqa: BLE001 - never let analysis affect a rename
+        result.layout_kind = None
+
     # Determine what needs to be renamed based on mode
     should_rename_torrent = mode in [
         RenameMode.TORRENT_ONLY,
@@ -1433,6 +1452,7 @@ async def perform_rename(
     if torrent_needs_rename:
         if await qbit.rename_torrent(torrent_hash, new_name):
             result.torrent_renamed = True
+            result.applied_torrent_rename = (current_name, new_name)
         else:
             result.success = False
 
@@ -1450,6 +1470,7 @@ async def perform_rename(
     if folder_needs_rename:
         if await qbit.rename_folder(torrent_hash, root_folder, new_name):
             result.folder_renamed = True
+            result.applied_folder_rename = (root_folder, new_name)
             # Small delay to allow qBittorrent to update all file paths after folder rename
             await asyncio.sleep(0.2)
         else:
@@ -1482,6 +1503,10 @@ async def perform_rename(
                     # No folder rename, paths should be as-is from rename plan
                     expected_path = new_path
                 expected_files[expected_path] = old_path
+
+        # Record the final (old_path -> new_path) file moves for the audit log /
+        # rollback. new_path already reflects the folder rename above.
+        result.applied_file_renames = [(old, new) for new, old in expected_files.items()]
 
     # Determine expected folder after rename
     expected_folder_name = new_name if folder_needs_rename else root_folder

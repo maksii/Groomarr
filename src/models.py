@@ -521,3 +521,151 @@ class StatusView(BaseModel):
     config_found: bool
     config_error: str | None = None
     readonly: bool = False
+
+
+# =============================================================================
+# Operation history (dashboard) models
+# =============================================================================
+
+
+class OperationFileChange(BaseModel):
+    """A single file rename within an operation (old -> new)."""
+
+    old_path: str
+    new_path: str
+    changed: bool = True
+
+
+class OperationSummary(BaseModel):
+    """A row in the operations log (the fields the table + filters need)."""
+
+    id: int
+    created_at: str
+    updated_at: str
+    source: str = ""
+    event_type: str = ""
+    status: str = ""
+    decision: str = ""
+    skip_reason: str = ""
+    media_title: str = ""
+    release_title: str = ""
+    indexer: str = ""
+    tracker_name: str | None = None
+    used_global: bool = True
+    torrent_hash: str = ""
+    old_name: str = ""
+    new_name: str = ""
+    layout_kind: str = ""
+    files_renamed: int = 0
+    files_total: int = 0
+    dry_run: bool = False
+    rolled_back: bool = False
+    rollback_of: int | None = None
+
+
+class OperationListResponse(BaseModel):
+    """Paginated, filtered operations log."""
+
+    items: list[OperationSummary] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 50
+    offset: int = 0
+
+
+class OperationStats(BaseModel):
+    """Aggregate counts for the dashboard KPI cards."""
+
+    total: int = 0
+    last_24h: int = 0
+    renamed: int = 0
+    skipped: int = 0
+    failed: int = 0
+    rolled_back: int = 0
+    by_status: dict[str, int] = Field(default_factory=dict)
+    by_source: dict[str, int] = Field(default_factory=dict)
+    last_operation_at: str | None = None
+
+
+class LiveTorrentState(BaseModel):
+    """The torrent's CURRENT state in qBittorrent (fetched live for the detail view)."""
+
+    checked: bool = False  # whether qBittorrent could be queried at all
+    torrent_exists: bool = False
+    torrent_name: str | None = None
+    root_folder: str | None = None
+    files: list[str] = Field(default_factory=list)
+    matches_rename: bool = False  # current torrent name still equals the renamed value
+    # Live download status, so the dashboard can show whether the torrent is still
+    # downloading, completed, seeding, paused, etc. (purely informational).
+    state: str = ""  # raw qBittorrent state (e.g. uploading, stalledUP, pausedDL)
+    progress: float | None = None  # download completion in [0.0, 1.0]
+    size: int | None = None  # total size in bytes
+    note: str = ""
+
+
+class OperationDetail(OperationSummary):
+    """Full operation record + parsed detail + live torrent state."""
+
+    download_client: str = ""
+    quality: str = ""
+    release_group: str = ""
+    rename_mode: str = ""
+    folder_old: str | None = None
+    folder_new: str | None = None
+    error: str = ""
+    rolled_back_at: str | None = None
+    rollback_op: int | None = None
+    rule_steps: list[SimulateStep] = Field(default_factory=list)
+    trigger_checks: list[FilterCheck] = Field(default_factory=list)
+    file_changes: list[OperationFileChange] = Field(default_factory=list)
+    live: LiveTorrentState | None = None
+    can_rollback: bool = False
+    rollback_unavailable_reason: str = ""
+
+
+class RollbackStepView(BaseModel):
+    """One reverse rename step shown in the rollback preview."""
+
+    kind: str  # torrent | folder | file
+    frm: str
+    to: str
+
+
+class RollbackSkip(BaseModel):
+    """An element the rollback will NOT touch, with the reason (drift / safety)."""
+
+    kind: str
+    frm: str
+    to: str
+    reason: str
+
+
+class RollbackPreviewResponse(BaseModel):
+    """What a rollback would do, computed against current live state (no changes)."""
+
+    status: str = "ok"  # ok | unavailable | error
+    operation_id: int
+    torrent_exists: bool = True
+    can_rollback: bool = False
+    reason: str = ""
+    torrent_step: RollbackStepView | None = None
+    folder_step: RollbackStepView | None = None
+    file_steps: list[RollbackStepView] = Field(default_factory=list)
+    skipped: list[RollbackSkip] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RollbackResponse(BaseModel):
+    """Outcome of executing a rollback."""
+
+    status: str  # success | partial | error | unavailable
+    operation_id: int
+    rollback_operation_id: int | None = None
+    torrent_reverted: bool = False
+    folder_reverted: bool = False
+    files_reverted: int = 0
+    files_failed: int = 0
+    files_skipped: int = 0
+    steps: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    reason: str = ""
