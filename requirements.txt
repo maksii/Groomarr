@@ -9,7 +9,7 @@ httpx>=0.28.1
 
 # Development dependencies
 ruff>=0.15.11
-pre-commit>=4.0.0
+pre-commit>=4.6.0
 
 # Test dependencies
 pytest>=8.0.0
