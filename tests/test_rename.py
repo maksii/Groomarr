@@ -618,6 +618,49 @@ class TestInsertEpisodeIntoName:
         episode_info = ("01", "E", "07")
         result = insert_episode_into_name("SeriesX S02 E01-E12 1080p WEBDL", episode_info)
         assert "S02E07" in result
+        # The whole range collapses to the file's own episode: no "-E12" tail.
+        assert result == "SeriesX S02E07 1080p WEBDL"
+
+    def test_season_episode_range_collapses_to_file_episode(self):
+        """Season+episode range title ("S01E01-E02") narrows to each file's own episode.
+
+        Regression: EPISODE_PATTERN matched only the leading "S01E01" of the range,
+        so ``.sub(count=1)`` left the "-E02" tail behind — file 1 kept the whole
+        "S01E01-E02" and file 2 became the broken "S01E02-E02". The full range must
+        instead be replaced by the file's single episode, using the title's season.
+        """
+        title = "Neko to Ryuu S01E01-E02 (2026) WEBRip 1080p x264 Ukrainian-Kioto_anime"
+        assert insert_episode_into_name(title, ("01", "E", "01")) == (
+            "Neko to Ryuu S01E01 (2026) WEBRip 1080p x264 Ukrainian-Kioto_anime"
+        )
+        assert insert_episode_into_name(title, ("01", "E", "02")) == (
+            "Neko to Ryuu S01E02 (2026) WEBRip 1080p x264 Ukrainian-Kioto_anime"
+        )
+
+    def test_season_episode_range_three_episode_pack(self):
+        """A three-episode range (S01E01-E03) narrows per file, title season wins."""
+        title = "Heroine Seijo desu S01E01-E03 (2026) WEBRip 1080p x265 Ukrainian-Deeman"
+        assert insert_episode_into_name(title, ("01", "E", "01")) == (
+            "Heroine Seijo desu S01E01 (2026) WEBRip 1080p x265 Ukrainian-Deeman"
+        )
+        assert insert_episode_into_name(title, ("01", "E", "02")) == (
+            "Heroine Seijo desu S01E02 (2026) WEBRip 1080p x265 Ukrainian-Deeman"
+        )
+        # No "-E03" remnant should survive in any per-file name.
+        assert "-E03" not in insert_episode_into_name(title, ("01", "E", "02"))
+
+    def test_season_episode_range_full_plan_no_collapse(self):
+        """End-to-end: a range-titled pack yields distinct, clean per-file names."""
+        files = [
+            {"name": "[Kioto anime] Neko to Ryuu.S01E01.mkv"},
+            {"name": "[Kioto anime] Neko To Ryuu.S01E02.mkv"},
+        ]
+        plan, _ = validate_rename_plan(
+            files, "Neko to Ryuu S01E01-E02 (2026) WEBRip 1080p x264 Ukrainian-Kioto_anime", None
+        )
+        new_bases = [p[1] for p in plan]
+        assert len(set(new_bases)) == 2  # distinct — no collapse
+        assert not any("-E02" in b for b in new_bases)  # no broken range tail
 
 
 class TestBuildNewFilePathTVSeries:
