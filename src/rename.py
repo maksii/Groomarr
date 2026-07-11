@@ -572,6 +572,16 @@ SEASON_ONLY_PATTERN = re.compile(r"S(\d+)(?![\s_]*E)", re.IGNORECASE)
 # anime / episode packs. Used to splice in a file's own absolute episode.
 EP_RANGE_PATTERN = re.compile(r"E\d{1,4}\s*[-–—]\s*E?\d{1,4}", re.IGNORECASE)
 
+# Pattern for a season+episode RANGE envelope in a title, e.g. "S01E01-E02",
+# "S01E01-E03", "S02 E01-E12", or cross-season "S01E12-S02E01". The indexer
+# stamps a whole multi-episode pack with the range; each individual FILE must
+# instead carry its OWN single "SxxExx". Captures the leading season (group 1),
+# which is authoritative. The trailing "E" is required so a resolution glued on
+# with a dash ("S01E05-1080p") is never mistaken for a range.
+SEASON_EPISODE_RANGE_PATTERN = re.compile(
+    r"S(\d+)[\s_]*E(?:P)?\s*\d+\s*[-–—]\s*(?:S\d+[\s_]*)?E(?:P)?\s*\d+", re.IGNORECASE
+)
+
 # Unicode dashes: regular hyphen (-), en-dash (–), em-dash (—)
 DASHES = r"\-\u2013\u2014"
 
@@ -849,6 +859,17 @@ def insert_episode_into_name(new_name: str, episode_info: tuple[str, str, str]) 
         New name with episode identifier inserted
     """
     file_season_num, ep_marker, episode_num = episode_info
+
+    # A season+episode RANGE in the title ("S01E01-E02") names the whole pack,
+    # not this one file. Collapse the ENTIRE range to THIS file's own single
+    # episode, keeping the title's leading season as authoritative. This must run
+    # BEFORE the plain-episode branch below, which would otherwise match only the
+    # range's first token ("S01E01") and leave a broken "-E02" tail on every file.
+    range_match = SEASON_EPISODE_RANGE_PATTERN.search(new_name)
+    if range_match:
+        title_season = range_match.group(1)
+        full_identifier = build_episode_identifier(title_season, ep_marker, episode_num)
+        return SEASON_EPISODE_RANGE_PATTERN.sub(full_identifier, new_name, count=1)
 
     # Check if new_name already has an episode pattern FIRST
     # This must be checked before season-only pattern to avoid partial matches
