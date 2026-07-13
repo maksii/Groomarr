@@ -94,19 +94,19 @@ class TestSanitizeSpecialCharacters:
         assert sanitize_filename("D.Gray-man") == "D.Gray-man"
         assert sanitize_filename("Dr. Strangelove") == "Dr. Strangelove"
 
-    def test_removes_colons(self):
-        """Colons should be removed (invalid filesystem character)."""
-        # Note: Forward slashes are also removed, so "Fate/stay" becomes "Fatestay"
+    def test_replaces_colons(self):
+        """Colons become a dash, reusing the following space when there is one."""
         assert (
             sanitize_filename("Fate/stay night: Unlimited Blade Works")
-            == "Fatestay night Unlimited Blade Works"
+            == "Fate-stay night - Unlimited Blade Works"
         )
-        assert sanitize_filename("Movie: Subtitle") == "Movie Subtitle"
+        assert sanitize_filename("Movie: Subtitle") == "Movie - Subtitle"
+        assert sanitize_filename("Re:ZERO") == "Re-ZERO"
 
-    def test_removes_forward_slashes(self):
-        """Forward slashes should be removed (invalid filesystem character)."""
-        assert sanitize_filename("Fate/stay night") == "Fatestay night"
-        assert sanitize_filename("Path/To/Movie") == "PathToMovie"
+    def test_replaces_forward_slashes(self):
+        """Forward slashes become a dash (never glue the words together)."""
+        assert sanitize_filename("Fate/stay night") == "Fate-stay night"
+        assert sanitize_filename("Path/To/Movie") == "Path-To-Movie"
 
     def test_removes_question_marks(self):
         """Question marks should be removed (invalid filesystem character)."""
@@ -118,17 +118,25 @@ class TestSanitizeSpecialCharacters:
         assert sanitize_filename("Movie*Name") == "MovieName"
         assert sanitize_filename("Title*") == "Title"
 
+    def test_replaces_pipes(self):
+        """Pipes (language separators in release titles) become a dash."""
+        assert (
+            sanitize_filename("Title S01 2026 WEB-DL Ukr|Eng-Wrden")
+            == "Title S01 2026 WEB-DL Ukr-Eng-Wrden"
+        )
+        assert sanitize_filename("Ukr Jap | Sub Ukr Eng") == "Ukr Jap - Sub Ukr Eng"
+
     def test_real_world_movie_titles(self):
         """Test sanitization of real-world movie titles."""
         test_cases = [
             ("K-ON! The Movie (2011) 1080p BluRay", "K-ON! The Movie (2011) 1080p BluRay"),
             (
                 "Re:ZERO -Starting Life in Another World- The Frozen Bond (2019) 1080p",
-                "ReZERO -Starting Life in Another World- The Frozen Bond (2019) 1080p",
+                "Re-ZERO -Starting Life in Another World- The Frozen Bond (2019) 1080p",
             ),
             (
                 "Fate/stay night: Heaven's Feel - III. Spring Song (2020) 4K",
-                "Fatestay night Heaven's Feel - III. Spring Song (2020) 4K",
+                "Fate-stay night - Heaven's Feel - III. Spring Song (2020) 4K",
             ),
             (
                 "Love, Chunibyo & Other Delusions! Take on Me (2018) 1080p",
@@ -136,7 +144,7 @@ class TestSanitizeSpecialCharacters:
             ),
             (
                 "JoJo's Bizarre Adventure: Diamond is Unbreakable Chapter I (2017) BluRay",
-                "JoJo's Bizarre Adventure Diamond is Unbreakable Chapter I (2017) BluRay",
+                "JoJo's Bizarre Adventure - Diamond is Unbreakable Chapter I (2017) BluRay",
             ),
         ]
 
@@ -150,11 +158,11 @@ class TestSanitizeSpecialCharacters:
             ("K-ON! S01 BluRay 1080p", "K-ON! S01 BluRay 1080p"),
             (
                 "Re:ZERO -Starting Life in Another World- S02 1080p WEBDL",
-                "ReZERO -Starting Life in Another World- S02 1080p WEBDL",
+                "Re-ZERO -Starting Life in Another World- S02 1080p WEBDL",
             ),
             (
                 "Fate/stay night: Unlimited Blade Works S01 1080p",
-                "Fatestay night Unlimited Blade Works S01 1080p",
+                "Fate-stay night - Unlimited Blade Works S01 1080p",
             ),
             (
                 "Love, Chunibyo & Other Delusions! S01 1080p",
@@ -721,7 +729,8 @@ class TestFullFlowSpecialCharacters:
             old_path, new_name, root_folder, episode_override=episode_info
         )
 
-        assert "Re:ZERO" in new_path or "ReZERO" in new_path  # Colon may be removed
+        assert "Re-ZERO" in new_path  # Colon is illegal in a path, replaced with a dash
+        assert ":" not in new_path
         assert "S02E05" in new_path
         assert new_path.endswith(".mkv")
 

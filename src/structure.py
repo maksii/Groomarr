@@ -604,7 +604,7 @@ def _target_path(
     ext = "." + segment.rsplit(".", 1)[-1] if "." in segment else ""
     base = sanitize_filename(base_name)
     if root_folder and old_path.startswith(root_folder + "/"):
-        folder_name = root_folder if preserve_folder else new_name
+        folder_name = root_folder if preserve_folder else sanitize_filename(new_name)
         relative = old_path[len(root_folder) + 1 :]
         if "/" in relative:
             subdir = relative.rsplit("/", 1)[0]

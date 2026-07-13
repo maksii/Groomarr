@@ -37,6 +37,7 @@ from .rename import (
     explain_filters,
     get_root_folder,
     perform_rename,
+    sanitize_filename,
     should_process,
     validate_rename_plan,
 )
@@ -401,7 +402,7 @@ def _preview_file_plan(
         root_folder = get_root_folder(files)
         folder_old = root_folder
         folder_new = (
-            new_name
+            sanitize_filename(new_name)
             if root_folder
             and mode
             in (
@@ -926,8 +927,9 @@ async def preview_rename(request: ManualRenameRequest):
         RenameMode.FOLDER_ONLY,
     ]:
         if root_folder:
-            response.new_root_folder = new_name
-            response.folder_will_change = root_folder != new_name
+            fs_name = sanitize_filename(new_name)
+            response.new_root_folder = fs_name
+            response.folder_will_change = root_folder != fs_name
         else:
             warnings.append("No root folder to rename (single file or flat structure)")
 

@@ -72,8 +72,21 @@ class TestStripMediaExtension:
 class TestSanitizeFilename:
     """Test filename sanitization."""
 
-    def test_removes_invalid_chars(self):
-        assert sanitize_filename('test<>:"/\\|?*.txt') == "test.txt"
+    def test_leaves_no_invalid_char_behind(self):
+        for ch in '<>:"/\\|?*':
+            assert ch not in sanitize_filename(f"a{ch}b")
+
+    def test_replaces_separators_instead_of_gluing_words(self):
+        assert sanitize_filename("Fate/stay night") == "Fate-stay night"
+        assert sanitize_filename("Ukr Jap | Sub Ukr Eng") == "Ukr Jap - Sub Ukr Eng"
+        assert sanitize_filename('Title: Slogan? "quoted"') == "Title - Slogan 'quoted'"
+
+    def test_collapses_doubled_separators(self):
+        assert sanitize_filename("Ukr Jap | / Sub") == "Ukr Jap - Sub"
+
+    def test_drops_trailing_dot_and_space(self):
+        # Windows rejects a path component ending in a dot or a space.
+        assert sanitize_filename("Title. ") == "Title"
 
     def test_collapses_multiple_spaces(self):
         assert sanitize_filename("test   file   name") == "test file name"
