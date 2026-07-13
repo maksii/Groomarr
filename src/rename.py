@@ -366,8 +366,30 @@ def strip_media_extension(name: str) -> str:
     return name
 
 
+# Windows/POSIX-illegal characters, mapped to a readable stand-in instead of being
+# deleted. Deleting them glued words together ("Fate/stay" -> "Fatestay") and left
+# doubled spaces ("Ukr Jap | Sub" -> "Ukr Jap  Sub"), both of which break the
+# Sonarr/Radarr parsers that read these names back. The mapping mirrors Sonarr's own
+# CleanFileName: separators become a dash, quotes become an apostrophe, and the
+# characters that carry no meaning in a name are dropped.
+_FS_REPLACEMENTS = {
+    "/": "-",
+    "\\": "-",
+    "|": "-",
+    '"': "'",
+    "*": "",
+    "<": "",
+    ">": "",
+    "?": "",
+}
+_FS_TRANSLATION = str.maketrans(_FS_REPLACEMENTS)
+
+
 def sanitize_filename(name: str) -> str:
-    """Remove/replace invalid filesystem characters.
+    """Make a name safe to use as a single path component (folder or file base).
+
+    Applied to folder/file names only — the torrent's display name keeps the
+    original title, since qBittorrent accepts any characters there.
 
     Args:
         name: Original filename
@@ -375,18 +397,24 @@ def sanitize_filename(name: str) -> str:
     Returns:
         Sanitized filename safe for filesystem
     """
-    # Remove invalid characters: < > : " / \ | ? *
-    invalid_chars = r'[<>:"/\\|?*]'
-    name = re.sub(invalid_chars, "", name)
+    # Colon first: "Movie: Subtitle" reads best as "Movie - Subtitle", but a bare
+    # colon ("Re:ZERO") has no space to reuse and just becomes a dash.
+    name = name.replace(": ", " - ").replace(":", "-")
+
+    name = name.translate(_FS_TRANSLATION)
 
     # Remove control characters
     name = re.sub(r"[\x00-\x1f\x7f]", "", name)
 
+    # Collapse the separators the replacements can double up ("a | / b" -> "a - b")
+    name = re.sub(r"-(?:\s*-)+", "-", name)
+
     # Collapse multiple spaces
     name = re.sub(r"\s+", " ", name)
 
-    # Trim whitespace and limit length
+    # Trim, cap length, and drop trailing dots/spaces (illegal on Windows)
     name = name.strip()[:250]
+    name = name.rstrip(". ")
 
     return name
 
@@ -433,8 +461,10 @@ def apply_rename_rules(original_name: str, rules: TrackerRules) -> str:
     # 4. Add prefix/suffix
     name = f"{rules.prefix}{name.strip()}{rules.suffix}"
 
-    # 5. Sanitize for filesystem
-    name = sanitize_filename(name)
+    # 5. Tidy whitespace only. This name becomes the torrent's display name, which
+    # qBittorrent accepts verbatim, so the original characters are preserved here;
+    # filesystem sanitization happens where folder/file paths are built.
+    name = re.sub(r"\s+", " ", name).strip()
 
     return name
 
@@ -543,10 +573,10 @@ def apply_rename_rules_traced(
             {"rule": " + ".join(labels) or "trim whitespace", "before": before, "after": name}
         )
 
-    # 6. Sanitize for filesystem
-    after = sanitize_filename(name)
+    # 6. Tidy whitespace (filesystem sanitization happens per folder/file path)
+    after = re.sub(r"\s+", " ", name).strip()
     if after != name:
-        steps.append({"rule": "sanitize for filesystem", "before": name, "after": after})
+        steps.append({"rule": "collapse whitespace", "before": name, "after": after})
     name = after
 
     return name, steps
@@ -1166,6 +1196,10 @@ def build_new_file_path(
     Returns:
         New file path
     """
+    # Everything below becomes a real path component, so the name must be
+    # filesystem-safe here (the caller's ``new_name`` is the raw release title).
+    new_name = sanitize_filename(new_name)
+
     # Get file extension
     ext = ""
     if "." in old_path:
@@ -1338,6 +1372,10 @@ async def perform_rename(
     files = await asyncio.to_thread(qbit.get_files, torrent_hash)
     root_folder = get_root_folder(files)
 
+    # The torrent's display name keeps the release title as-is (qBittorrent accepts
+    # any characters); folders and files get the filesystem-safe variant.
+    fs_name = sanitize_filename(new_name)
+
     # Record the detected layout for the audit log (purely informational here).
     try:
         from .structure import analyze_torrent
@@ -1365,7 +1403,7 @@ async def perform_rename(
 
     # Check current state to determine what actually needs changing
     torrent_needs_rename = should_rename_torrent and current_name != new_name
-    folder_needs_rename = should_rename_folder and root_folder != new_name
+    folder_needs_rename = should_rename_folder and root_folder != fs_name
 
     # Build file rename plan if needed
     rename_plan: list[tuple[str, str]] = []
@@ -1378,7 +1416,7 @@ async def perform_rename(
 
         try:
             rename_plan, warnings = validate_rename_plan(
-                files, new_name, root_folder, preserve_folder=preserve_folder
+                files, fs_name, root_folder, preserve_folder=preserve_folder
             )
 
             # Log warnings for partial conflicts
@@ -1489,9 +1527,9 @@ async def perform_rename(
 
     # Rename root folder AFTER files (folder rename updates all file paths)
     if folder_needs_rename:
-        if await qbit.rename_folder(torrent_hash, root_folder, new_name):
+        if await qbit.rename_folder(torrent_hash, root_folder, fs_name):
             result.folder_renamed = True
-            result.applied_folder_rename = (root_folder, new_name)
+            result.applied_folder_rename = (root_folder, fs_name)
             # Small delay to allow qBittorrent to update all file paths after folder rename
             await asyncio.sleep(0.2)
         else:
@@ -1516,7 +1554,7 @@ async def perform_rename(
                     if new_path.startswith(root_folder + "/"):
                         # Extract relative path after old folder, then prepend new folder
                         relative_path = new_path[len(root_folder) + 1 :]
-                        expected_path = f"{new_name}/{relative_path}"
+                        expected_path = f"{fs_name}/{relative_path}"
                     else:
                         # Path doesn't start with root folder - shouldn't happen but handle it
                         expected_path = new_path
@@ -1530,7 +1568,7 @@ async def perform_rename(
         result.applied_file_renames = [(old, new) for new, old in expected_files.items()]
 
     # Determine expected folder after rename
-    expected_folder_name = new_name if folder_needs_rename else root_folder
+    expected_folder_name = fs_name if folder_needs_rename else root_folder
 
     # Run verification with retries (qBit may take time to propagate changes)
     verification_passed, verification_errors = await _verify_rename_state(
