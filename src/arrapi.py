@@ -16,6 +16,12 @@ class ParseResult:
     custom_format_score: int
     custom_formats: list[str]
     parsed_title: str | None  # What Arr extracted as the title
+    release_group: str | None = None
+    quality: str | None = None  # e.g. "WEBDL-1080p"
+    episodes: tuple | None = None  # (season, episode numbers, absolute numbers); Sonarr only
+    # Arr matched the name to a library series/movie. Without a match the score
+    # is 0 whatever the custom formats are, so scores cannot be compared.
+    matched: bool = False
 
 
 @dataclass
@@ -117,6 +123,26 @@ class ArrClient:
             logger.error(f"{self.app_type} API unexpected error: {e}")
             return False
 
+    async def get_grab_info_url(self, download_id: str) -> str | None:
+        """Return the indexer details link recorded with a grab (``nzbInfoUrl``).
+
+        Looked up in the Arr history by download id. Optional enrichment: any
+        failure returns ``None``.
+        """
+        try:
+            client = await self._get_client()
+            response = await client.get(
+                f"{self.url}/api/v3/history",
+                params={"downloadId": download_id, "eventType": 1, "pageSize": 1},
+            )
+            if response.status_code != 200:
+                return None
+            records = response.json().get("records") or []
+            return (records[0].get("data") or {}).get("nzbInfoUrl") if records else None
+        except Exception as e:  # noqa: BLE001 - enrichment must never break a rename
+            logger.warning(f"[{self.app_type}] Grab history lookup failed: {e}")
+            return None
+
     async def parse_title(self, title: str) -> ParseResult | None:
         """Parse a release title using the Arr API.
 
@@ -155,8 +181,9 @@ class ArrClient:
 
             # Extract parsed title based on app type
             parsed_title = None
+            episodes = None
             if self.app_type == "radarr":
-                parsed_info = data.get("parsedMovieInfo", {})
+                parsed_info = data.get("parsedMovieInfo") or {}
                 if parsed_info:
                     # Try to get movie titles
                     movie_titles = parsed_info.get("movieTitles", [])
@@ -165,9 +192,15 @@ class ArrClient:
                     elif parsed_info.get("movieTitle"):
                         parsed_title = parsed_info["movieTitle"]
             else:  # sonarr
-                parsed_info = data.get("parsedEpisodeInfo", {})
+                parsed_info = data.get("parsedEpisodeInfo") or {}
                 if parsed_info:
                     parsed_title = parsed_info.get("seriesTitle")
+                    episodes = (
+                        parsed_info.get("seasonNumber"),
+                        tuple(parsed_info.get("episodeNumbers") or ()),
+                        tuple(parsed_info.get("absoluteEpisodeNumbers") or ()),
+                    )
+            quality = ((parsed_info.get("quality") or {}).get("quality") or {}).get("name")
 
             logger.debug(
                 f"[{self.app_type}] Parsed '{title[:40]}...' -> "
@@ -179,6 +212,10 @@ class ArrClient:
                 custom_format_score=custom_format_score,
                 custom_formats=custom_formats,
                 parsed_title=parsed_title,
+                release_group=parsed_info.get("releaseGroup"),
+                quality=quality,
+                episodes=episodes,
+                matched=bool(data.get("series") or data.get("movie")),
             )
 
         except httpx.RequestError as e:

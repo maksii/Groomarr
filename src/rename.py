@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -132,10 +133,12 @@ def evaluate_filters(
     if matches_any(quality, rules.qualities_exclude):
         return False, f"quality '{quality}' in exclude list"
 
-    # Release group filter
+    # Release group filter. An include list means "only these groups": a release
+    # whose group is unknown is not one of them (it used to slip through and get
+    # renamed under a SubsPlease-only tracker rule).
     group = release_group or ""
     if rules.release_groups_include:
-        if group and not matches_any(group, rules.release_groups_include):
+        if not matches_any(group, rules.release_groups_include):
             return False, f"release_group '{group}' not in include list"
     if group and matches_any(group, rules.release_groups_exclude):
         return False, f"release_group '{group}' in exclude list"
@@ -241,8 +244,8 @@ def explain_filters(
 
     grp = release_group or ""
     if rules.release_groups_include:
-        # Mirror evaluate_filters: an empty release group passes the include check.
-        ok = (not grp) or matches_any(grp, rules.release_groups_include)
+        # Mirror evaluate_filters: an unknown (empty) group is not in the include list.
+        ok = matches_any(grp, rules.release_groups_include)
         add(
             "Release group — include",
             grp or "(none)",
@@ -384,6 +387,31 @@ _FS_REPLACEMENTS = {
 }
 _FS_TRANSLATION = str.maketrans(_FS_REPLACEMENTS)
 
+# Linux filesystems cap a path component at 255 BYTES (not characters), and an
+# extension of up to 5 bytes (".m2ts") is appended after the base name.
+_MAX_NAME_BYTES = 250
+_TRIM_ANCHOR = re.compile(r"(?i)\bS\d+(?:E\d+)?|\b(?:19|20)\d{2}\b|\b\d{3,4}[pi]\b")
+
+
+def _fit_bytes(name: str, limit: int = _MAX_NAME_BYTES) -> str:
+    """Cap ``name`` at ``limit`` UTF-8 bytes, keeping its informative tail.
+
+    Sonarr/Radarr read quality, languages and the release group from the END of a
+    name, so slicing the end off ("...H.264-SubsPleas") loses the group and its
+    custom-format score. The title part before the first episode/year/resolution
+    anchor is shortened instead; only without a usable anchor is the end cut.
+    """
+    if len(name.encode()) <= limit:
+        return name
+    m = _TRIM_ANCHOR.search(name, 1)
+    if m:
+        tail = name[m.start() :]
+        room = limit - len(tail.encode()) - 1
+        if room >= 8:
+            head = name[: m.start()].encode()[:room].decode(errors="ignore").rstrip(" .-,")
+            return f"{head} {tail}"
+    return name.encode()[:limit].decode(errors="ignore")
+
 
 def sanitize_filename(name: str) -> str:
     """Make a name safe to use as a single path component (folder or file base).
@@ -413,10 +441,93 @@ def sanitize_filename(name: str) -> str:
     name = re.sub(r"\s+", " ", name)
 
     # Trim, cap length, and drop trailing dots/spaces (illegal on Windows)
-    name = name.strip()[:250]
+    name = _fit_bytes(name.strip())
     name = name.rstrip(". ")
 
     return name
+
+
+# Release attributes that an indexer title often omits but the original file
+# name carries (and Sonarr/Radarr score): streaming service, audio, HDR/bit
+# depth, edition, revision, English audio. Each category is carried over only
+# when the title has nothing from it, so title and original never conflict.
+_CARRY_CATEGORIES = (
+    r"AMZN|NF|DSNP|ATVP|HMAX|MAX|HULU|PCOK|PMTP|CRAV|STAN|iT|MA(?=[ ._-]WEB)",
+    r"DDP?\+?[ .]?\d\.\d|DD\+|EAC3|E-AC-3|AC3|TrueHD|Atmos|DTS-HD[ .]MA|DTS-X|DTS|FLAC"
+    r"|AAC(?:[ .]?\d\.\d)?|Opus",
+    r"HDR10\+|HDR10|HDR|DV|DoVi|10bit|10-bit",
+    r"Extended|Director'?s[ .]Cut|Theatrical(?:[ .]Cut)?|Special[ .]Edition|Uncensored|Uncut"
+    r"|IMAX|Open[ .]Matte|Remastered|Criterion|Hybrid",
+    r"REPACK\d?|PROPER|RERIP",
+    r"ENG|English",
+    r"[xh]\.?26[45]|HEVC|AVC",
+    # Subtitles as a phrase ("Ukr DVO SUB", "Sub Ukr"): language-sub CFs match the pair
+    r"ukr[ ._-](?:[a-z]{3}[ ._-])?subs?|subs?[ ._/-]ukr|subs? ukrainian|msubs|sub(?:ukr|eng)",
+    r"DUB|DVO|MVO|SVO|AVO",  # Ukrainian voice-over type
+)
+_TRAILING_GROUP = re.compile(r"-([^\s\-]+)$")
+
+
+def _tokens(name: str, pattern: str) -> list[str]:
+    return re.findall(rf"(?<![A-Za-z0-9])(?:{pattern})(?![A-Za-z0-9])", name, re.IGNORECASE)
+
+
+def carry_tokens(title: str, original: str) -> str:
+    """Insert attributes only the ``original`` name has into ``title``, before its ``-Group``.
+
+    "Backrooms (2026) WEB-DL 1080p Ukrainian-X" + "Backrooms.2026.1080p.AMZN.WEB-DL
+    .DD+5.1.H.264-playWEB" -> "Backrooms (2026) WEB-DL 1080p Ukrainian AMZN DD+5.1-X".
+    """
+    extra: list[str] = []
+    for pattern in _CARRY_CATEGORIES:
+        if _tokens(title, pattern):
+            continue
+        for tok in _tokens(original, pattern):
+            tok = re.sub(r"(?<=[A-Za-z'])\.(?=[A-Za-z])", " ", tok)  # "Director's.Cut", not "H.264"
+            if not re.search(
+                rf"(?i)(?<![A-Za-z0-9]){re.escape(tok)}(?![A-Za-z0-9])", " ".join(extra)
+            ):
+                extra.append(tok)
+    if not extra:
+        return title
+    m = _TRAILING_GROUP.search(title)
+    head, tail = (title[: m.start()], title[m.start() :]) if m else (title, "")
+    return f"{head} {' '.join(extra)}{tail}"
+
+
+def numbered_title(title: str, season: int | None, episodes: tuple, absolute: tuple) -> str | None:
+    """Title with its season/episode envelope replaced by one file's own numbering.
+
+    For files the planner leaves alone (season-less files in an "S01-S02" pack,
+    guesses outside the grab): left with their original names they score below
+    the grab and Sonarr re-grabs the release. The numbering is Sonarr's own
+    reading of the original name, so the episode identity is unchanged while the
+    rest of the title keeps the grab's score. ``None`` for multi-episode files
+    or a title without an envelope.
+    """
+    if absolute and not episodes and len(absolute) == 1:
+        token = f"- {absolute[0]:02d}"  # Sonarr reads "Title - 05" as absolute, "E05" as S01E05
+    elif season is not None and len(episodes) == 1:
+        token = f"S{season:02d}E{episodes[0]:02d}"
+    else:
+        return None
+    for pattern in (
+        SEASON_EPISODE_RANGE_PATTERN,
+        SEASON_RANGE_PATTERN,
+        EPISODE_PATTERN,
+        SEASON_ONLY_PATTERN,
+        EP_RANGE_PATTERN,
+    ):
+        m = pattern.search(title)
+        if m:
+            return title[: m.start()] + token + title[m.end() :]
+    return None
+
+
+def with_group(name: str, group: str) -> str:
+    """Return ``name`` with its trailing ``-Group`` set to ``group`` (appended if absent)."""
+    m = _TRAILING_GROUP.search(name)
+    return f"{name[: m.start()] if m else name}-{group}"
 
 
 def apply_rename_rules(original_name: str, rules: TrackerRules) -> str:
@@ -594,8 +705,19 @@ EPISODE_PATTERN = re.compile(r"S(\d+)[\s_]*(E(?:P)?)\s*(\d+)", re.IGNORECASE)
 # Pattern for bracketed season_episode: [S01_E001], [S01 E05]
 BRACKETED_EPISODE_PATTERN = re.compile(r"\[S(\d+)[\s_]*(E(?:P)?)\s*(\d+)\]", re.IGNORECASE)
 
-# Pattern to match season-only identifier: S01, S02, etc.
-SEASON_ONLY_PATTERN = re.compile(r"S(\d+)(?![\s_]*E)", re.IGNORECASE)
+# Pattern to match season-only identifier: S01, S02, etc. Bounded on both sides:
+# without them "S01 extended" matched as "S0" (then "S0E041 extended"), and any
+# word starting with "E" after the season ("S01 English") blocked the match.
+SEASON_ONLY_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])S(\d+)(?!\d)(?![\s_]*E(?:P)?\s*\d)", re.IGNORECASE
+)
+
+# A season RANGE in a title ("S01-S02", "S01-02"): a multi-season pack. Files
+# without their own season cannot be told apart, so they are never stamped with
+# the range's first season.
+SEASON_RANGE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])S\d{1,2}\s*[-–—]\s*S?\d{1,2}(?![\dE])", re.IGNORECASE
+)
 
 # Pattern for an episode-only RANGE envelope with no season token, e.g.
 # "E110-E293", "E01-E32", "E00-E37" — how the indexer names absolute-numbered
@@ -603,13 +725,16 @@ SEASON_ONLY_PATTERN = re.compile(r"S(\d+)(?![\s_]*E)", re.IGNORECASE)
 EP_RANGE_PATTERN = re.compile(r"E\d{1,4}\s*[-–—]\s*E?\d{1,4}", re.IGNORECASE)
 
 # Pattern for a season+episode RANGE envelope in a title, e.g. "S01E01-E02",
-# "S01E01-E03", "S02 E01-E12", or cross-season "S01E12-S02E01". The indexer
-# stamps a whole multi-episode pack with the range; each individual FILE must
-# instead carry its OWN single "SxxExx". Captures the leading season (group 1),
-# which is authoritative. The trailing "E" is required so a resolution glued on
-# with a dash ("S01E05-1080p") is never mistaken for a range.
+# "S02 E01-E12", cross-season "S01E12-S02E01", or ukr-torznab's "S01E01-17"
+# (no second "E"). The indexer stamps a whole multi-episode pack with the range;
+# each individual FILE must instead carry its OWN single "SxxExx". Captures the
+# leading season (group 1), which is authoritative. A bare trailing number must
+# not be a resolution or bit depth glued on with a dash ("S01E05-1080p",
+# "S01E05-10bit"), which is never a range.
 SEASON_EPISODE_RANGE_PATTERN = re.compile(
-    r"S(\d+)[\s_]*E(?:P)?\s*\d+\s*[-–—]\s*(?:S\d+[\s_]*)?E(?:P)?\s*\d+", re.IGNORECASE
+    r"S(\d+)[\s_]*E(?:P)?\s*\d+\s*[-–—]\s*"
+    r"(?:(?:S\d+[\s_]*)?E(?:P)?\s*\d+|\d{1,4}(?!\d|[pi]\b|bit))",
+    re.IGNORECASE,
 )
 
 # Unicode dashes: regular hyphen (-), en-dash (–), em-dash (—)
@@ -816,19 +941,21 @@ def extract_episode_from_batch(filenames: list[str]) -> dict[str, str]:
                 original_str = match.group(1) if match else str(num_int)
                 pos_numbers[fname] = (num_int, original_str)
 
-        # Check if we have a number from every file at this position
-        if len(pos_numbers) != len(filenames):
+        # A file with no number here, or one sharing it with another file (a
+        # promo "_2" next to episode "_002", an OVA "10.5" next to "10"), is left
+        # out — it keeps its name — instead of sinking the whole batch. Most
+        # files must still be covered, and a partial result scores lower.
+        counts = Counter(v[0] for v in pos_numbers.values())
+        pos_numbers = {f: v for f, v in pos_numbers.items() if counts[v[0]] == 1}
+        if len(pos_numbers) < 2 or len(pos_numbers) < 0.8 * len(filenames):
             continue
-
-        # Check if all numbers are unique
         unique_nums = [v[0] for v in pos_numbers.values()]
-        if len(set(unique_nums)) != len(filenames):
-            continue
 
         # Validate that numbers form a proper ascending sequence
-        is_valid, score = _is_valid_episode_sequence(unique_nums, len(filenames))
+        is_valid, score = _is_valid_episode_sequence(unique_nums, len(unique_nums))
         if not is_valid:
             continue
+        score *= len(unique_nums) / len(filenames)
 
         # Track the best sequence found (highest score)
         if score > best_score:
@@ -872,7 +999,8 @@ def build_episode_identifier(season: str, ep_marker: str, episode: str) -> str:
     """
     # Normalize EP to E for consistency
     marker = "E" if ep_marker.upper() in ("E", "EP") else ep_marker.upper()
-    return f"S{season}{marker}{episode}"
+    # Pad to two digits ("s02e2" -> "S02E02"); wider numbers keep their padding.
+    return f"S{season.zfill(2)}{marker}{episode.zfill(2)}"
 
 
 def insert_episode_into_name(new_name: str, episode_info: tuple[str, str, str]) -> str:
@@ -923,16 +1051,16 @@ def insert_episode_into_name(new_name: str, episode_info: tuple[str, str, str]) 
         return SEASON_ONLY_PATTERN.sub(full_identifier, new_name, count=1)
 
     # Episode-range envelope but no season token (absolute-numbered anime, e.g.
-    # "Bleach E110-E293"): replace the range with THIS file's own episode number,
-    # preserving the absolute E-style. Fabricating "SxxExx" here would both
-    # duplicate the envelope AND assert a season the release does not have —
-    # Sonarr maps anime by absolute number, so we keep the absolute number.
+    # "Bleach E110-E293"): replace the range with THIS file's own episode number
+    # in the absolute " - 05" form (Sonarr reads a bare "E05" as S01E05).
+    # Fabricating "SxxExx" here would both duplicate the envelope AND assert a
+    # season the release does not have — Sonarr maps anime by absolute number.
     ep_range_match = EP_RANGE_PATTERN.search(new_name)
     if ep_range_match:
         try:
-            abs_ep = f"E{int(episode_num):02d}"
+            abs_ep = f"- {int(episode_num):02d}"
         except (TypeError, ValueError):
-            abs_ep = f"E{episode_num}"
+            abs_ep = f"- {episode_num}"
         return EP_RANGE_PATTERN.sub(abs_ep, new_name, count=1)
 
     # No season pattern found in title, use season from file's episode_info
@@ -987,6 +1115,9 @@ def validate_rename_plan(
     new_name: str,
     root_folder: str | None,
     preserve_folder: bool = False,
+    movie: bool = False,
+    file_names: dict[str, str] | None = None,
+    allowed_episodes: set[tuple[int, int]] | None = None,
 ) -> tuple[list[tuple[str, str]], list[str]]:
     """Validate rename plan and detect potential conflicts.
 
@@ -999,6 +1130,14 @@ def validate_rename_plan(
         root_folder: Root folder if exists
         preserve_folder: If True, keep files in original folder (for renaming
                          files before folder). If False, use new_name as folder.
+        movie: The grab came from Radarr, so a lone video never gets an episode
+               token even if its filename carries one ("Doctor Who S11E00").
+        file_names: Indexer-supplied target file names (lower-cased torrent path
+               or basename -> new basename), e.g. ukr-torznab's own file map.
+               When any file matches, it replaces the heuristics.
+        allowed_episodes: ``(season, episode)`` pairs Sonarr grabbed. In a
+               multi-video pack, a heuristic name claiming an episode outside
+               this set is not applied (see ``keep_grabbed_episodes``).
 
     Returns:
         Tuple of (rename_plan, warnings) where:
@@ -1011,14 +1150,44 @@ def validate_rename_plan(
     if not files:
         return [], []
 
+    # Imported lazily to avoid a circular import (structure builds on this
+    # module's episode helpers).
+    from .structure import VIDEO_EXTS, build_mapped_plan
+
+    if file_names:
+        mapped = build_mapped_plan(files, new_name, root_folder, preserve_folder, file_names)
+        if mapped is not None:
+            return mapped
+
+    plan, warnings = _heuristic_plan(files, new_name, root_folder, preserve_folder, movie)
+    videos = [f for f in files if f.get("name", "").lower().endswith(VIDEO_EXTS)]
+    if allowed_episodes and len(videos) > 1:
+        plan, reverted = keep_grabbed_episodes(plan, allowed_episodes)
+        warnings += [
+            f"left '{o.rsplit('/', 1)[-1]}' unchanged: {ident} is not among the grabbed episodes"
+            for o, ident in reverted
+        ]
+    return plan, warnings
+
+
+def _heuristic_plan(
+    files: list[dict[str, Any]],
+    new_name: str,
+    root_folder: str | None,
+    preserve_folder: bool,
+    movie: bool,
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Plan file names from the release title and the files' own names."""
     # Structure-aware handling for complex packs (multi-season / season+specials
     # / collection). Imported lazily to avoid a circular import (structure
-    # builds on this module's episode helpers). Simple seasons and movies fall
-    # through to the unchanged logic below, so existing behaviour is preserved.
+    # builds on this module's episode helpers).
     from .structure import LayoutKind, analyze_torrent, build_complex_plan
 
     layout = analyze_torrent(files)
-    if layout.is_complex:
+    # A season-range title ("S01-S02") is a multi-season pack even when the files
+    # carry no season of their own; the complex planner places only files whose
+    # season is known and leaves the rest untouched.
+    if layout.is_complex or (layout.video_count > 1 and SEASON_RANGE_PATTERN.search(new_name)):
         return build_complex_plan(files, new_name, root_folder, preserve_folder, layout)
 
     # A movie is a SINGLE feature file; fabricating an "SxxExx" for it (e.g. from
@@ -1028,7 +1197,7 @@ def validate_rename_plan(
     # *classified* as movie (e.g. episodes the analyzer could not parse) must
     # still get per-file episodes from the base extractor, or every file would
     # collapse onto one name.
-    is_movie = layout.kind == LayoutKind.MOVIE and layout.video_count == 1
+    is_movie = layout.video_count == 1 and (movie or layout.kind == LayoutKind.MOVIE)
 
     # Samples never participate in the rename plan: renaming a sample to the
     # content's name would collapse it onto the real file (data loss), and
@@ -1043,35 +1212,19 @@ def validate_rename_plan(
     warnings: list[str] = []
     rename_plan: list[tuple[str, str]] = []
 
-    # Get all original filenames for batch analysis
-    original_filenames = []
-    for f in files:
-        path = f.get("name", "")
-        filename = path.rsplit("/", 1)[-1] if "/" in path else path
-        original_filenames.append(filename)
+    # First pass: which files carry their own season+episode ("S01E05")
+    def has_season_episode(name: str) -> bool:
+        return bool(BRACKETED_EPISODE_PATTERN.search(name) or EPISODE_PATTERN.search(name))
 
-    # First pass: try standard episode extraction
-    paths_with_episodes = []
-    paths_without_episodes = []
+    names = {f.get("name", ""): f.get("name", "").rsplit("/", 1)[-1] for f in files}
+    seasonless = [n for n in names.values() if not has_season_episode(n)]
 
-    for f in files:
-        old_path = f.get("name", "")
-        filename = old_path.rsplit("/", 1)[-1] if "/" in old_path else old_path
-        episode_info = extract_episode_identifier(filename)
-        if episode_info:
-            paths_with_episodes.append((old_path, episode_info))
-        else:
-            paths_without_episodes.append(old_path)
-
-    # If most files don't have standard episode identifiers, try batch analysis
+    # Season-less files are read as a batch: a sequence consistent across the
+    # whole pack beats a per-file guess that grabs a stray number from an episode
+    # title ("Naruto 025 - ... question #10", "... part 1").
     batch_episodes: dict[str, str] = {}
-    if len(paths_without_episodes) > 1 and len(paths_without_episodes) >= len(files) * 0.5:
-        # Get filenames without paths for batch analysis
-        filenames_for_batch = [
-            (p.rsplit("/", 1)[-1] if "/" in p else p) for p in paths_without_episodes
-        ]
-        batch_episodes = extract_episode_from_batch(filenames_for_batch)
-
+    if len(seasonless) > 1:
+        batch_episodes = extract_episode_from_batch(seasonless)
         if batch_episodes:
             logger.info(
                 f"Using batch episode detection for {len(batch_episodes)} files "
@@ -1080,20 +1233,27 @@ def validate_rename_plan(
 
     # Build rename plan
     new_paths: dict[str, list[str]] = {}  # new_path -> list of old_paths (for conflict detection)
+    has_numbered = bool(batch_episodes) or any(map(extract_episode_identifier, names.values()))
 
     for f in files:
         old_path = f.get("name", "")
-        filename = old_path.rsplit("/", 1)[-1] if "/" in old_path else old_path
+        filename = names[old_path]
 
         # Try to get episode info from various sources (never for movies).
-        episode_info = None if is_movie else extract_episode_identifier(filename)
+        episode_info = None
+        if not is_movie:
+            if filename in batch_episodes:
+                # Use default season 01 for batch-detected episodes
+                episode_info = ("01", "E", batch_episodes[filename])
+                logger.debug(f"Batch detection: {filename} -> E{batch_episodes[filename]}")
+            else:
+                episode_info = extract_episode_identifier(filename)
 
-        # If no standard episode, try batch analysis result
-        if not is_movie and not episode_info and filename in batch_episodes:
-            episode_num = batch_episodes[filename]
-            # Use default season 01 for batch-detected episodes
-            episode_info = ("01", "E", episode_num)
-            logger.debug(f"Batch detection: {filename} -> E{episode_num}")
+        # An unnumbered file inside an episode pack (promo, "10.5 OVA", nfo) keeps
+        # its name: the bare pack title would label it as the whole pack/range.
+        if not is_movie and not episode_info and has_numbered:
+            rename_plan.append((old_path, old_path))
+            continue
 
         # Build new path
         new_path = build_new_file_path(
@@ -1137,6 +1297,30 @@ def validate_rename_plan(
             )
 
     return rename_plan, warnings
+
+
+def keep_grabbed_episodes(
+    plan: list[tuple[str, str]], allowed: set[tuple[int, int]]
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Undo moves that would label a file with an episode Sonarr did not grab.
+
+    Heuristics can only guess the season of a bare number ("Naruto 036" in an
+    "S01" pack, "Sabrina P03E28", a "S01E00" pilot), and a wrong guess makes
+    Sonarr import the file as the wrong episode or reject it. Sonarr's grab
+    already lists the episodes the pack holds, so a name outside that set is
+    reverted to the original, still-parseable one. Returns ``(plan, reverted)``
+    where ``reverted`` is ``(old_path, identifier)``.
+    """
+    kept: list[tuple[str, str]] = []
+    reverted: list[tuple[str, str]] = []
+    for old, new in plan:
+        m = EPISODE_PATTERN.search(new.rsplit("/", 1)[-1]) if old != new else None
+        if m and (int(m.group(1)), int(m.group(3))) not in allowed:
+            kept.append((old, old))
+            reverted.append((old, m.group(0)))
+        else:
+            kept.append((old, new))
+    return kept, reverted
 
 
 # =============================================================================
@@ -1218,8 +1402,9 @@ def build_new_file_path(
 
     # Build the file's base name
     if episode_info:
-        # TV series: insert episode identifier into the new name
-        file_base_name = insert_episode_into_name(new_name, episode_info)
+        # TV series: insert episode identifier into the new name (re-fitted: the
+        # inserted id can push a name that was at the length cap over it)
+        file_base_name = sanitize_filename(insert_episode_into_name(new_name, episode_info))
         logger.debug(f"Preserved episode info: {original_filename} -> {file_base_name}{ext}")
     else:
         # Movie or no episode info: use new name as-is
@@ -1250,8 +1435,8 @@ async def _verify_rename_state(
     expected_folder: str | None,
     expected_files: dict[str, str] | None,
     mode: RenameMode,
-    max_retries: int = 5,
-    retry_delay: float = 0.5,
+    max_retries: int = 10,
+    retry_delay: float = 1.0,
 ) -> tuple[bool, list[str]]:
     """Verify the actual state matches expected after rename operations.
 
@@ -1341,6 +1526,9 @@ async def perform_rename(
     torrent_hash: str,
     new_name: str,
     mode: RenameMode,
+    movie: bool = False,
+    file_names: dict[str, str] | None = None,
+    allowed_episodes: set[tuple[int, int]] | None = None,
 ) -> RenameResult:
     """Perform the actual rename operations based on mode.
 
@@ -1353,6 +1541,11 @@ async def perform_rename(
         torrent_hash: Torrent info hash
         new_name: New name to apply
         mode: Rename mode
+        movie: Grab came from Radarr (see ``validate_rename_plan``)
+        file_names: Indexer-supplied file names (see ``validate_rename_plan``)
+        allowed_episodes: ``(season, episode)`` pairs Sonarr grabbed. In a
+            multi-file pack, a file whose new name would claim an episode
+            outside this set keeps its name instead.
 
     Returns:
         RenameResult with detailed status of what was renamed
@@ -1416,7 +1609,13 @@ async def perform_rename(
 
         try:
             rename_plan, warnings = validate_rename_plan(
-                files, fs_name, root_folder, preserve_folder=preserve_folder
+                files,
+                fs_name,
+                root_folder,
+                preserve_folder=preserve_folder,
+                movie=movie,
+                file_names=file_names,
+                allowed_episodes=allowed_episodes,
             )
 
             # Log warnings for partial conflicts

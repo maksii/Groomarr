@@ -604,7 +604,7 @@ class TestInsertEpisodeIntoName:
         result = insert_episode_into_name(
             "Bleach E110-E293 (2004-2012) BluRay 1080p Ukrainian-fanat22012", episode_info
         )
-        assert result == "Bleach E110 (2004-2012) BluRay 1080p Ukrainian-fanat22012"
+        assert result == "Bleach - 110 (2004-2012) BluRay 1080p Ukrainian-fanat22012"
         assert "E110-E293" not in result  # envelope consumed
         assert "( S01E110" not in result  # not spliced into the year parens
         assert "S01E110" not in result  # no fabricated season for absolute anime
@@ -615,7 +615,7 @@ class TestInsertEpisodeIntoName:
         result = insert_episode_into_name(
             "Candy Candy E01-E32 (1976-1979) DVDRip 720p Ukrainian-fanat22012", episode_info
         )
-        assert result == "Candy Candy E05 (1976-1979) DVDRip 720p Ukrainian-fanat22012"
+        assert result == "Candy Candy - 05 (1976-1979) DVDRip 720p Ukrainian-fanat22012"
 
     def test_absolute_episode_range_zero_episode(self):
         """Episode 0 (e.g. a prologue) is preserved, not dropped."""
@@ -623,7 +623,7 @@ class TestInsertEpisodeIntoName:
         result = insert_episode_into_name(
             "Mobile Suit Gundam SEED E00-E37 (2002) BluRay 1080p Ukrainian-Gwean", episode_info
         )
-        assert result == "Mobile Suit Gundam SEED E00 (2002) BluRay 1080p Ukrainian-Gwean"
+        assert result == "Mobile Suit Gundam SEED - 00 (2002) BluRay 1080p Ukrainian-Gwean"
 
     def test_season_token_still_wins_over_episode_range(self):
         """A real season token must still take priority over a bare episode range."""
@@ -1061,7 +1061,7 @@ class TestValidateRenamePlan:
         )
         new_bases = [p[1].rsplit("/", 1)[-1] for p in plan]
         assert len(set(new_bases)) == 5  # all distinct — no collapse
-        assert all("E0" in b for b in new_bases)
+        assert all(" - 0" in b for b in new_bases)  # absolute form Sonarr reads as such
 
     def test_user_scenario_aku_no_hana(self):
         """Test the exact user scenario that caused the bug.

@@ -102,6 +102,7 @@ docker-compose up -d
 | `SONARR_API_KEY` | `null` | Sonarr API key (Settings → General) |
 | `RADARR_URL` | `null` | Radarr API URL (for score validation) |
 | `RADARR_API_KEY` | `null` | Radarr API key (Settings → General) |
+| `UKR_TORZNAB_URL` | `null` | [ukr-torznab](https://github.com/vanchaxy/ukr-torznab) base URL (e.g. `http://ukr-torznab:8000`). Toloka/UTP season packs then take each file's name from its parser's TVDB-based file → episode map instead of filename heuristics. Needs `SONARR_URL`/`SONARR_API_KEY` (the grab's details link is read from Sonarr history). |
 | `STATIC_DIR` | `frontend/dist` | Directory of the built web UI (set automatically in the Docker image) |
 | `CONFIG_READONLY` | `false` | If `true`, the web UI/API cannot modify `rename_rules.yaml` |
 | `HISTORY_DB` | _(next to rules file)_ | Path to the operation-history SQLite database. Defaults to `groomarr_history.db` beside `rename_rules.yaml`, so the same `/config` volume persists it across restarts. |
@@ -224,7 +225,7 @@ score_validation_policy: "block"
 | `min_customformat_score` | Minimum score threshold (null = disabled) |
 | `download_clients_include` | Only process from these clients |
 | `download_clients_exclude` | Skip these download clients |
-| `release_groups_include` | Only process these release groups |
+| `release_groups_include` | Only process these release groups (a release with no detected group is skipped) |
 | `release_groups_exclude` | Skip these release groups |
 
 #### Available Rename Rules

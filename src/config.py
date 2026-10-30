@@ -100,6 +100,10 @@ class Settings(BaseSettings):
     radarr_url: str | None = Field(default=None)
     radarr_api_key: str | None = Field(default=None)
 
+    # ukr-torznab base URL (optional). When set, Toloka/UTP grabs take their file
+    # names from its parser's per-file episode map instead of the heuristics.
+    ukr_torznab_url: str | None = Field(default=None)
+
     # Timing
     initial_delay: float = Field(default=2.0)
     max_retries: int = Field(default=10)

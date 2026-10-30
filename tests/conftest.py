@@ -7,9 +7,22 @@ fixture rules file. Point ``HISTORY_DB`` at a session-scoped temp file so the
 audit store never pollutes the repository, regardless of which test runs.
 """
 
+import functools
 import os
 
 import pytest
+
+from src import rename
+
+
+@pytest.fixture(autouse=True)
+def _fast_rename_verification(monkeypatch):
+    """Mocked qBittorrent never "catches up", so don't wait out the real retry window."""
+    monkeypatch.setattr(
+        rename,
+        "_verify_rename_state",
+        functools.partial(rename._verify_rename_state, max_retries=2, retry_delay=0),
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)

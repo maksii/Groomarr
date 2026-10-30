@@ -613,6 +613,38 @@ def _target_path(
     return f"{base}{ext}"
 
 
+def build_mapped_plan(
+    files: list[dict],
+    new_name: str,
+    root_folder: str | None,
+    preserve_folder: bool,
+    file_names: dict[str, str],
+) -> tuple[list[tuple[str, str]], list[str]] | None:
+    """Plan file names from an indexer's own file -> name map (ukr-torznab).
+
+    The map is built from the tracker page and TVDB episode lists, so it knows
+    what filename heuristics cannot (absolute anime numbering, specials, "101"
+    style numbers). Keys are lower-cased torrent paths or basenames; values are
+    target basenames. Files the map does not cover (extras, samples, promos)
+    keep their names, as the indexer's own renamer does. Returns ``None`` when
+    no file matches, so the caller falls back to the heuristics.
+    """
+    plan: list[tuple[str, str]] = []
+    for f in files:
+        path = f.get("name", "")
+        target = file_names.get(path.lower()) or file_names.get(path.rsplit("/", 1)[-1].lower())
+        if not target:
+            continue
+        ext = _ext_of(path.rsplit("/", 1)[-1])
+        stem = target[: -len(ext)] if ext and target.lower().endswith(ext) else target
+        plan.append((path, _target_path(path, stem, root_folder, preserve_folder, new_name)))
+    if not plan:
+        return None
+    # Two versions of one episode map to the same name: those files keep theirs.
+    safe, dropped = partition_safe_moves(plan, [f.get("name", "") for f in files])
+    return safe, [f"left '{o.rsplit('/', 1)[-1]}' unchanged: {why}" for o, _n, why in dropped]
+
+
 def build_complex_plan(
     files: list[dict],
     new_name: str,
