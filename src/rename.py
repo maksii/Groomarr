@@ -1311,6 +1311,9 @@ def keep_grabbed_episodes(
     reverted to the original, still-parseable one. Returns ``(plan, reverted)``
     where ``reverted`` is ``(old_path, identifier)``.
     """
+    shifted = _shift_onto_grabbed(plan, allowed)
+    if shifted:
+        return shifted, []
     kept: list[tuple[str, str]] = []
     reverted: list[tuple[str, str]] = []
     for old, new in plan:
@@ -1321,6 +1324,44 @@ def keep_grabbed_episodes(
         else:
             kept.append((old, new))
     return kept, reverted
+
+
+def _shift_onto_grabbed(
+    plan: list[tuple[str, str]], allowed: set[tuple[int, int]]
+) -> list[tuple[str, str]] | None:
+    """Renumber a chapter-numbered pack onto the episodes Sonarr grabbed.
+
+    Some seasons number episodes continuously ("Sabrina S03E21-28" is TVDB
+    S03E01-08). Only when no file names a grabbed episode, all share one season,
+    and the file numbers form one run exactly as long as the grabbed run is the
+    offset unambiguous; otherwise ``None``.
+    """
+    found = [
+        (i, m)
+        for i, (_, new) in enumerate(plan)
+        if (m := EPISODE_PATTERN.search(new.rsplit("/", 1)[-1]))
+    ]
+    keys = {(int(m.group(1)), int(m.group(3))) for _, m in found}
+    seasons = {s for s, _ in keys}
+    if not found or keys & allowed or len(seasons) != 1:
+        return None
+    season = seasons.pop()
+    have = sorted(e for _, e in keys)
+    want = sorted(e for s, e in allowed if s == season)
+
+    def is_run(xs: list[int]) -> bool:
+        return bool(xs) and xs == list(range(xs[0], xs[0] + len(xs)))
+
+    if len(have) != len(want) or not is_run(have) or not is_run(want):
+        return None
+    shift = want[0] - have[0]
+    out = list(plan)
+    for i, m in found:
+        old, new = plan[i]
+        head, sep, base = new.rpartition("/")
+        base = f"{base[: m.start()]}S{season:02d}E{int(m.group(3)) + shift:02d}{base[m.end() :]}"
+        out[i] = (old, head + sep + base)
+    return out
 
 
 # =============================================================================

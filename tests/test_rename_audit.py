@@ -128,6 +128,26 @@ class TestPlanner:
         assert names["naruto 035 - x.avi"] == "Naruto S01E035 480p.avi"
         assert names["naruto 036 - x.avi"] == "naruto 036 - x.avi"
 
+    def test_chapter_numbered_pack_shifts_onto_grabbed_run(self):
+        # Sabrina part 3 numbers chapters 21-28; TVDB and the grab call them S03E01-08.
+        files = [{"name": f"Sab S03/Sab S03E{i} WEBRip-grp.mkv"} for i in range(21, 29)]
+        allowed = {(3, e) for e in range(1, 9)}
+        names = _bases(
+            validate_rename_plan(files, "Sab S03 WEBRip-grp", "Sab S03", allowed_episodes=allowed)[
+                0
+            ]
+        )
+        assert names["Sab S03E21 WEBRip-grp.mkv"] == "Sab S03E01 WEBRip-grp.mkv"
+        assert names["Sab S03E28 WEBRip-grp.mkv"] == "Sab S03E08 WEBRip-grp.mkv"
+        # A partial overlap is ambiguous: nothing is shifted.
+        partial = {(3, e) for e in range(1, 22)}
+        names = _bases(
+            validate_rename_plan(files, "Sab S03 WEBRip-grp", "Sab S03", allowed_episodes=partial)[
+                0
+            ]
+        )
+        assert names["Sab S03E28 WEBRip-grp.mkv"] == "Sab S03E28 WEBRip-grp.mkv"
+
     def test_indexer_file_map_wins(self):
         files = [
             {"name": "Pack/ep13 ova.mkv"},
