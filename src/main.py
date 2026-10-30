@@ -12,7 +12,7 @@ from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, config, history
+from . import __version__, config, history, torznab
 from .api import check_connection_async
 from .api import router as api_router
 from .arrapi import ArrClient
@@ -34,13 +34,17 @@ from .rename import (
     RenameMode,
     apply_rename_rules,
     apply_rename_rules_traced,
+    carry_tokens,
     explain_filters,
     get_root_folder,
+    numbered_title,
     perform_rename,
     sanitize_filename,
     should_process,
     validate_rename_plan,
+    with_group,
 )
+from .structure import VIDEO_EXTS
 
 # Setup logging
 setup_logging()
@@ -390,7 +394,11 @@ def _decision_detail(
 
 
 def _preview_file_plan(
-    files: list[dict], new_name: str, mode: RenameMode
+    files: list[dict],
+    new_name: str,
+    mode: RenameMode,
+    movie: bool = False,
+    file_names: dict[str, str] | None = None,
 ) -> tuple[list[dict], str | None, str | None]:
     """Build a display-only file plan (used for dry-run records). Never raises.
 
@@ -414,7 +422,9 @@ def _preview_file_plan(
         )
         plan: list[dict] = []
         if mode in (RenameMode.TORRENT_FOLDER_FILES, RenameMode.FILES_ONLY):
-            rename_plan, _warnings = validate_rename_plan(files, new_name, root_folder)
+            rename_plan, _warnings = validate_rename_plan(
+                files, new_name, root_folder, movie=movie, file_names=file_names
+            )
             plan = [
                 {"old_path": old, "new_path": new, "changed": old != new}
                 for old, new in rename_plan
@@ -438,6 +448,147 @@ async def _update(op_id: int | None, **fields) -> None:
         return
     with contextlib.suppress(Exception):
         await asyncio.to_thread(history.update_operation, op_id, **fields)
+
+
+async def _indexer_file_names(source: str, torrent_hash: str) -> dict[str, str] | None:
+    """ukr-torznab's own per-file names for a Sonarr grab, when it came from there."""
+    if source != "sonarr" or not settings.ukr_torznab_url or sonarr_client is None:
+        return None
+    info_url = await sonarr_client.get_grab_info_url(torrent_hash)
+    return await torznab.fetch_file_names(settings.ukr_torznab_url, info_url)
+
+
+async def _enrich_file_names(
+    source: str,
+    files: list[dict],
+    new_name: str,
+    movie: bool,
+    file_names: dict[str, str] | None,
+    allowed_episodes: set[tuple[int, int]] | None,
+) -> dict[str, str] | None:
+    """Pick, per file, the best-scoring of: the planned name, plus carried-over attributes,
+    plus the original's own release group.
+
+    Indexer titles often drop what the original file name had: the real group
+    (uploader names replace Hurtom/playWEB/NTG), AMZN/NF, audio, HDR, edition,
+    English audio. The user's own Sonarr/Radarr custom-format score decides,
+    since it rates groups and tokens the way the user wants; a candidate must
+    parse to the same quality and episodes. Returns the full ``file_names`` map
+    to rename with (``None`` when Arr is unavailable or nothing is planned).
+    """
+    arr_client = radarr_client if movie else sonarr_client
+    if arr_client is None:
+        return file_names
+    try:
+        plan, _ = validate_rename_plan(
+            files,
+            sanitize_filename(new_name),
+            get_root_folder(files),
+            movie=movie,
+            file_names=file_names,
+            allowed_episodes=allowed_episodes,
+        )
+    except RenameConflictError:
+        return file_names
+    planned = dict(plan)
+
+    # The planned name is one guess among several. The grab-aware plan renumbers
+    # or reverts files whose own numbers are not the grabbed ones, but Sonarr may
+    # scene-map those numbers itself ("Bookworm S04E01" is the grabbed S01E37,
+    # the renumbered S04E37 is nothing); an indexer map can be wrong where the
+    # file's own numbering is right. Sonarr decides: when the planned name does
+    # not resolve into the grab, the first alternative that does is used.
+    alternatives: list[dict[str, str]] = []
+    if allowed_episodes and not movie:
+        sources = [(file_names, None)]
+        if file_names:  # Groomarr's own reading of the files, grab-aware then plain
+            sources += [(None, allowed_episodes), (None, None)]
+        for fmap, allowed in sources:
+            try:
+                alt, _ = validate_rename_plan(
+                    files,
+                    sanitize_filename(new_name),
+                    get_root_folder(files),
+                    file_names=fmap,
+                    allowed_episodes=allowed,
+                )
+            except RenameConflictError:
+                continue
+            alternatives.append({o: n for o, n in alt if n != planned.get(o, o)})
+
+    parsed: dict[str, object] = {}
+
+    async def parse(name: str):
+        if name not in parsed:
+            parsed[name] = await arr_client.parse_title(name)
+        return parsed[name]
+
+    def in_grab(p) -> bool:
+        return bool(p and p.resolved and p.resolved <= allowed_episodes)
+
+    title_fs = sanitize_filename(new_name)
+    chosen: dict[str, str] = {}
+    improved = 0
+    for f in files:
+        old = f.get("name", "")
+        if not old.lower().endswith(VIDEO_EXTS):
+            continue
+        old_base = old.rsplit("/", 1)[-1]
+        new_base = planned.get(old, old).rsplit("/", 1)[-1]
+        ext = "." + old_base.rsplit(".", 1)[-1]
+        others = [a[old].rsplit("/", 1)[-1] for a in alternatives if old in a]
+        if others and not (new_base != old_base and in_grab(await parse(new_base))):
+            for other in others:
+                if other != old_base and in_grab(await parse(other)):
+                    new_base = other
+                    break
+        original = await parse(old_base)
+        if original is None:
+            if new_base != old_base:
+                chosen[old.lower()] = new_base
+            continue
+        if new_base == old_base:
+            # Left alone by the planner. Its original name scores below the grab,
+            # which is what makes Sonarr grab the release again, so still name it
+            # from the title, numbered as Sonarr itself reads the original.
+            base = numbered_title(title_fs, *original.episodes) if original.episodes else None
+            p = await parse(base + ext) if base else None
+            if p is None or p.episodes != original.episodes:
+                continue
+            new_base = base + ext
+        stem, old_stem = new_base[: len(new_base) - len(ext)], old_base.rsplit(".", 1)[0]
+        best_name, best = new_base, await parse(new_base)
+        if best is None or not best.matched:
+            # Unmatched series/movie: the score reads 0 for every candidate, so a
+            # carried token with a negative score (e.g. "Dubs Only") would go unseen.
+            chosen[old.lower()] = new_base
+            continue
+        carried = carry_tokens(stem, old_stem)
+        candidates = [carried + ext]
+        group = original.release_group
+        if group and re.fullmatch(r"[A-Za-z0-9&._]{2,}", group):
+            candidates.append(with_group(carried, group) + ext)
+        for cand in candidates:
+            if cand == best_name:
+                continue
+            p = await parse(cand)
+            if (
+                p is None
+                or not p.matched
+                or (p.quality, p.episodes) != (best.quality, best.episodes)
+            ):
+                continue
+            score_up = p.custom_format_score > best.custom_format_score
+            richer = p.custom_format_score == best.custom_format_score and set(
+                best.custom_formats
+            ) < set(p.custom_formats)
+            if score_up or richer:
+                best_name, best = cand, p
+        improved += best_name != planned.get(old, old).rsplit("/", 1)[-1]
+        chosen[old.lower()] = best_name
+    if improved:
+        logger.info(f"[{source}] Kept original release info in {improved} file name(s)")
+    return chosen or file_names
 
 
 async def _validate_rename_score(
@@ -525,6 +676,7 @@ async def process_rename_task(
     effective_rules: TrackerRules,
     tracker_name: str | None = None,
     op_id: int | None = None,
+    allowed_episodes: set[tuple[int, int]] | None = None,
 ):
     """Background task to process rename operation.
 
@@ -536,6 +688,7 @@ async def process_rename_task(
         effective_rules: TrackerRules to use (global or tracker-specific)
         tracker_name: Name of matched tracker (None if using global rules)
         op_id: History operation id to update as the task progresses (best-effort).
+        allowed_episodes: ``(season, episode)`` pairs in the Sonarr grab.
     """
     hash_short = torrent_hash[:8]
     rules_info = f"tracker '{tracker_name}'" if tracker_name else "global"
@@ -594,6 +747,21 @@ async def process_rename_task(
         mode = RenameMode.TORRENT_AND_FOLDER
     await _update(op_id, rename_mode=mode.value)
 
+    movie = source == "radarr"
+    file_names = await _indexer_file_names(source, torrent_hash)
+    if file_names:
+        logger.info(f"[{source}] Using ukr-torznab file map ({len(file_names)} files)")
+    if mode in (RenameMode.TORRENT_FOLDER_FILES, RenameMode.FILES_ONLY):
+        files = await asyncio.to_thread(qbit_client.get_files, torrent_hash)
+        enriched = await _enrich_file_names(
+            source, files, new_name, movie, file_names, allowed_episodes
+        )
+        if enriched is not file_names:
+            # Names already checked against Sonarr: renumbering them onto the
+            # grab again would undo a scene-mapped choice.
+            allowed_episodes = None
+        file_names = enriched
+
     # Check for dry run mode
     if settings.dry_run:
         logger.info(
@@ -602,7 +770,9 @@ async def process_rename_task(
         )
         # Record what WOULD have happened so the dashboard can show the preview.
         files = await asyncio.to_thread(qbit_client.get_files, torrent_hash)
-        plan, folder_old, folder_new = _preview_file_plan(files, new_name, mode)
+        plan, folder_old, folder_new = _preview_file_plan(
+            files, new_name, mode, movie=movie, file_names=file_names
+        )
         layout_kind = None
         try:
             from .structure import analyze_torrent
@@ -627,6 +797,9 @@ async def process_rename_task(
         torrent_hash=torrent_hash,
         new_name=new_name,
         mode=mode,
+        movie=movie,
+        file_names=file_names,
+        allowed_episodes=allowed_episodes,
     )
 
     # Record the executed plan + outcome for the audit log and rollback.
@@ -1367,6 +1540,7 @@ async def sonarr_webhook(request: Request, background_tasks: BackgroundTasks):
         effective_rules=effective_rules,
         tracker_name=tracker_name,
         op_id=op_id,
+        allowed_episodes={(e.seasonNumber, e.episodeNumber) for e in payload.episodes} or None,
     )
 
     logger.info(
