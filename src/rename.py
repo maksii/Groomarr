@@ -1335,13 +1335,14 @@ def keep_grabbed_episodes(
 def _shift_onto_grabbed(
     plan: list[tuple[str, str]], allowed: set[tuple[int, int]]
 ) -> list[tuple[str, str]] | None:
-    """Renumber a pack whose numbering disagrees with the episodes Sonarr grabbed.
+    """Renumber a pack whose episode numbers disagree with the episodes Sonarr grabbed.
 
-    Some releases number a season continuously or by the tracker's season
-    ("Sabrina S03E21-28" is what Sonarr grabbed as TVDB S02E01-08). Only when
-    no file names a grabbed episode, the files and the grab each sit in one
-    season, and both are one unbroken run of the same length is the mapping
-    unambiguous; otherwise ``None``.
+    Some releases number a season continuously ("Sabrina S03E21-28" is what
+    Sonarr grabbed as S02E01-08 by scene-mapping the title's "S03"). The file
+    keeps its own season, which Sonarr scene-maps the same way as the title, and
+    only the episode numbers move onto the grabbed run. Only when no file names
+    a grabbed episode, the files and the grab each sit in one season, and both
+    are one unbroken run of the same length is this unambiguous; else ``None``.
     """
     found = [
         (i, m)
@@ -1353,7 +1354,7 @@ def _shift_onto_grabbed(
     targets = {s for s, _ in allowed}
     if not found or keys & allowed or len(seasons) != 1 or len(targets) != 1:
         return None
-    season = targets.pop()
+    season = seasons.pop()
     have = sorted(e for _, e in keys)
     want = sorted(e for _, e in allowed)
 
