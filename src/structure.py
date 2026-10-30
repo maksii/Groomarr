@@ -34,6 +34,7 @@ from enum import StrEnum
 from .rename import (
     BRACKETED_EPISODE_PATTERN,
     EPISODE_PATTERN,
+    NON_EPISODE_PATTERN,
     extract_episode_identifier,
     insert_episode_into_name,
     sanitize_filename,
@@ -75,7 +76,7 @@ _SPECIAL_FOLDER = re.compile(
 # A specials/extras marker appearing anywhere in a file *name* (inline special).
 _SPECIAL_TOKEN = re.compile(
     r"(?i)(?:\bspecials?\b|\bextras?\b|\bova\b|\bona\b|\boad\b|\bnced\b|\bncop\b|"
-    r"\bcreditless\b|\bomake\b|омаке|спешл|спецвипуск|\bSP\d|\bNC\b)"
+    r"\bcreditless\b|\bomake\b|омаке|спешл|спецвипуск|\bNC\b)"
 )
 
 _SAMPLE_TOKEN = re.compile(r"(?i)(?:^|[\W_])sample(?:[\W_]|$)")
@@ -263,7 +264,9 @@ def parse_file(path: str) -> FileMeta:
         return meta
 
     in_special_folder = any(_is_special_folder(seg) for seg in folder_segments)
-    has_special_token = bool(_SPECIAL_TOKEN.search(filename))
+    has_special_token = bool(
+        _SPECIAL_TOKEN.search(filename) or NON_EPISODE_PATTERN.search(filename)
+    )
 
     # 1. File's own SxxExx is authoritative for season + episode.
     full = full_season_episode(filename)
@@ -566,6 +569,24 @@ _SEASON_ENVELOPE = re.compile(
 _EP_RANGE = re.compile(r"(?i)\bE\d{1,4}\s*[-–—]\s*E?\d{1,4}\b")
 
 
+def small_duplicates(claims: dict[str, tuple[int, int]], sizes: dict[str, int]) -> set[str]:
+    """Files claiming the same episode as a file at least 4x their size.
+
+    A pack can hold shorts, previews or recaps numbered like the episodes
+    ("mini/Show MINI - 01" next to "Show - s01e01"). The episode is the big file;
+    the small ones are extras and keep their names. Files of similar size (two
+    versions of one episode) are left to the duplicate checks.
+    """
+    by_episode: dict[tuple[int, int], list[str]] = {}
+    for path, key in claims.items():
+        by_episode.setdefault(key, []).append(path)
+    small: set[str] = set()
+    for paths in by_episode.values():
+        biggest = max(sizes.get(p) or 0 for p in paths)
+        small |= {p for p in paths if 0 < (sizes.get(p) or 0) * 4 <= biggest}
+    return small
+
+
 def place_episode_in_title(title: str, season: int, episode: int) -> str:
     """Splice a file's TRUE ``SxxExx`` into the release title, cleanly.
 
@@ -697,6 +718,16 @@ def build_complex_plan(
         new_path = _target_path(m.path, base, root_folder, preserve_folder, new_name)
         plan.append((m.path, new_path))
         by_identifier.setdefault((m.season, m.episode), []).append(m.path)
+
+    sizes = {f.get("name", ""): f.get("size") or 0 for f in files}
+    claims = {p: key for key, paths in by_identifier.items() for p in paths}
+    if small := small_duplicates(claims, sizes):
+        plan = [(o, n) for o, n in plan if o not in small]
+        by_identifier = {k: [p for p in v if p not in small] for k, v in by_identifier.items()}
+        warnings += [
+            f"left '{p.rsplit('/', 1)[-1]}' unchanged: extra numbered like an episode"
+            for p in sorted(small)
+        ]
 
     # Sonarr loss condition: two files resolving to the same (season, episode).
     dupes = {k: v for k, v in by_identifier.items() if len(v) > 1}

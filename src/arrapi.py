@@ -19,6 +19,9 @@ class ParseResult:
     release_group: str | None = None
     quality: str | None = None  # e.g. "WEBDL-1080p"
     episodes: tuple | None = None  # (season, episode numbers, absolute numbers); Sonarr only
+    # Library (season, episode) pairs Sonarr maps the name to, scene mappings
+    # applied ("Bookworm S04E01" -> S01E37); empty when unmatched. Sonarr only.
+    resolved: frozenset = frozenset()
     # Arr matched the name to a library series/movie. Without a match the score
     # is 0 whatever the custom formats are, so scores cannot be compared.
     matched: bool = False
@@ -215,6 +218,10 @@ class ArrClient:
                 release_group=parsed_info.get("releaseGroup"),
                 quality=quality,
                 episodes=episodes,
+                resolved=frozenset(
+                    (e.get("seasonNumber"), e.get("episodeNumber"))
+                    for e in data.get("episodes") or []
+                ),
                 matched=bool(data.get("series") or data.get("movie")),
             )
 

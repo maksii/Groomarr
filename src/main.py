@@ -490,6 +490,31 @@ async def _enrich_file_names(
         )
     except RenameConflictError:
         return file_names
+    planned = dict(plan)
+
+    # The planned name is one guess among several. The grab-aware plan renumbers
+    # or reverts files whose own numbers are not the grabbed ones, but Sonarr may
+    # scene-map those numbers itself ("Bookworm S04E01" is the grabbed S01E37,
+    # the renumbered S04E37 is nothing); an indexer map can be wrong where the
+    # file's own numbering is right. Sonarr decides: when the planned name does
+    # not resolve into the grab, the first alternative that does is used.
+    alternatives: list[dict[str, str]] = []
+    if allowed_episodes and not movie:
+        sources = [(file_names, None)]
+        if file_names:  # Groomarr's own reading of the files, grab-aware then plain
+            sources += [(None, allowed_episodes), (None, None)]
+        for fmap, allowed in sources:
+            try:
+                alt, _ = validate_rename_plan(
+                    files,
+                    sanitize_filename(new_name),
+                    get_root_folder(files),
+                    file_names=fmap,
+                    allowed_episodes=allowed,
+                )
+            except RenameConflictError:
+                continue
+            alternatives.append({o: n for o, n in alt if n != planned.get(o, o)})
 
     parsed: dict[str, object] = {}
 
@@ -498,8 +523,10 @@ async def _enrich_file_names(
             parsed[name] = await arr_client.parse_title(name)
         return parsed[name]
 
+    def in_grab(p) -> bool:
+        return bool(p and p.resolved and p.resolved <= allowed_episodes)
+
     title_fs = sanitize_filename(new_name)
-    planned = dict(plan)
     chosen: dict[str, str] = {}
     improved = 0
     for f in files:
@@ -509,6 +536,12 @@ async def _enrich_file_names(
         old_base = old.rsplit("/", 1)[-1]
         new_base = planned.get(old, old).rsplit("/", 1)[-1]
         ext = "." + old_base.rsplit(".", 1)[-1]
+        others = [a[old].rsplit("/", 1)[-1] for a in alternatives if old in a]
+        if others and not (new_base != old_base and in_grab(await parse(new_base))):
+            for other in others:
+                if other != old_base and in_grab(await parse(other)):
+                    new_base = other
+                    break
         original = await parse(old_base)
         if original is None:
             if new_base != old_base:
@@ -720,9 +753,14 @@ async def process_rename_task(
         logger.info(f"[{source}] Using ukr-torznab file map ({len(file_names)} files)")
     if mode in (RenameMode.TORRENT_FOLDER_FILES, RenameMode.FILES_ONLY):
         files = await asyncio.to_thread(qbit_client.get_files, torrent_hash)
-        file_names = await _enrich_file_names(
+        enriched = await _enrich_file_names(
             source, files, new_name, movie, file_names, allowed_episodes
         )
+        if enriched is not file_names:
+            # Names already checked against Sonarr: renumbering them onto the
+            # grab again would undo a scene-mapped choice.
+            allowed_episodes = None
+        file_names = enriched
 
     # Check for dry run mode
     if settings.dry_run:

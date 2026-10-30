@@ -3,6 +3,8 @@
 Each case is a real title/file shape that was renamed wrongly (or not at all).
 """
 
+import re
+
 import httpx
 import pytest
 
@@ -329,3 +331,165 @@ class TestKeepOriginalInfo:
             None,
         )
         assert names[next(iter(names))].endswith("-Neo_Men.mkv")
+
+
+class TestTolokaCatalogue:
+    """File layouts seen across three pages of Toloka's anime section (2026-10-30)."""
+
+    def test_half_episode_keeps_its_name(self):
+        # "s01e2.5" was read as E02: two files collided on one name.
+        files = [{"name": f"B/bunny.drop.s01e{e}.1080p.bluray-dvt.mkv"} for e in (1, 2, "2.5", 3)]
+        names = _bases(validate_rename_plan(files, "Bunny Drop S01 1080p BluRay", "B")[0])
+        assert names["bunny.drop.s01e2.5.1080p.bluray-dvt.mkv"] == (
+            "bunny.drop.s01e2.5.1080p.bluray-dvt.mkv"
+        )
+        assert (
+            names["bunny.drop.s01e2.1080p.bluray-dvt.mkv"] == "Bunny Drop S01E02 1080p BluRay.mkv"
+        )
+
+    def test_half_episode_does_not_cancel_the_real_one_in_a_batch(self):
+        files = [
+            {"name": f"A/Aria the Origination - {e} (BDRip 1080p).mkv"}
+            for e in ("04", "05", "05.5", "06")
+        ]
+        names = _bases(validate_rename_plan(files, "Aria the Origination S03 1080p", "A")[0])
+        assert (
+            names["Aria the Origination - 05 (BDRip 1080p).mkv"]
+            == "Aria the Origination S03E05 1080p.mkv"
+        )
+        assert names["Aria the Origination - 05.5 (BDRip 1080p).mkv"] == (
+            "Aria the Origination - 05.5 (BDRip 1080p).mkv"
+        )
+
+    def test_numbered_special_is_not_an_episode(self):
+        files = [
+            {"name": f"L/Lord.of.Mysteries.S01SP0{i}.1440p.WEB-DL-InariDub.mkv"} for i in (1, 2, 3)
+        ]
+        plan, _ = validate_rename_plan(files, "Lord of Mysteries S01 1440p WEB-DL", "L")
+        assert all(old == new for old, new in plan)
+
+    def test_multi_season_pack_with_half_episode_specials(self):
+        # 103 files: "s2 - 01.5 (special)" next to "s2 - 01" left the whole pack unchanged.
+        files = []
+        for s, fmt in ((1, "[GM] K - {}"), (2, "K s2 - {}")):
+            for e in ("01", "01.5", "02", "02.5"):
+                files.append({"name": f"K [WEBDL]/season {s}/{fmt.format(e)} (WEBDL 1080).mkv"})
+        names = _bases(
+            validate_rename_plan(files, "Kusuriya no Hitorigoto S01-S02 1080p", "K [WEBDL]")[0]
+        )
+        assert names["K s2 - 02 (WEBDL 1080).mkv"] == "Kusuriya no Hitorigoto S02E02 1080p.mkv"
+        assert "K s2 - 02.5 (WEBDL 1080).mkv" not in names  # left untouched
+
+    def test_small_files_numbered_like_episodes_are_extras(self):
+        # Production op 333: "mini/Yani Neko MINI - 01" (5-17 MB) was named S01E01
+        # next to the real 512 MB s01e01, so Sonarr saw two files per episode.
+        mb = 1 << 20
+        files = [
+            {
+                "name": f"Y/[GM] Yani Neko - s01e0{e} (WEBDL 1080p HEVC AAC) Ukr DVO SUB.mkv",
+                "size": s * mb,
+            }
+            for e, s in ((1, 512), (2, 551), (3, 550))
+        ]
+        files += [
+            {"name": f"Y/mini/Yani Neko MINI - 0{e} (WEBDL 1080p x264 AAC).mkv", "size": s * mb}
+            for e, s in ((1, 5), (2, 9), (3, 17), (4, 7))
+        ]
+        title = "Yani Neko + mini S01E01-E03 (2026) WEB-DL 1080p x265 Ukrainian-GlassMoon"
+        names = _bases(validate_rename_plan(files, title, "Y")[0])
+        assert names["[GM] Yani Neko - s01e01 (WEBDL 1080p HEVC AAC) Ukr DVO SUB.mkv"] == (
+            "Yani Neko + mini S01E01 (2026) WEB-DL 1080p x265 Ukrainian-GlassMoon.mkv"
+        )
+        mini = "Yani Neko MINI - 01 (WEBDL 1080p x264 AAC).mkv"
+        assert names.get(mini, mini) == mini
+
+    def test_same_size_duplicates_are_not_guessed_apart(self):
+        # Two versions of one episode: no size hint, so neither is called an extra.
+        from src.structure import small_duplicates
+
+        claims = {"a/e01.mkv": (1, 1), "b/e01.mkv": (1, 1)}
+        assert small_duplicates(claims, {"a/e01.mkv": 500, "b/e01.mkv": 450}) == set()
+        assert small_duplicates(claims, {}) == set()
+
+    @pytest.mark.parametrize(
+        "fmt", ["{}ep umayuru ukr.mkv", "{} ep ukr seitokai ni mo ana wa aru!.mkv"]
+    )
+    def test_number_before_ep_marker(self, fmt):
+        # Seen as a "collection of distinct titles" and left unchanged.
+        files = [{"name": "U/" + fmt.format(e)} for e in (4, 2, 3, 1)]
+        names = _bases(validate_rename_plan(files, "Umayuru S01E01-04 1080p", "U")[0])
+        assert names[fmt.format(3)] == "Umayuru S01E03 1080p.mkv"
+
+    @pytest.mark.asyncio
+    async def test_scene_mapped_season_is_not_renumbered(self, monkeypatch):
+        # Sonarr grabbed "Bookworm S04" as TVDB S01E37-40 via a scene mapping: the
+        # file's own S04E01 is right, the renumbered S04E37 resolves to nothing.
+        from src import main
+        from src.arrapi import ParseResult
+
+        class Sonarr:
+            async def parse_title(self, name):
+                m = re.search(r"S04E(\d+)", name)
+                ep = int(m.group(1)) if m else None
+                return ParseResult(
+                    title=name,
+                    custom_format_score=0,
+                    custom_formats=[],
+                    parsed_title=None,
+                    quality="WEBRip-1080p",
+                    episodes=(4, (ep,), ()) if ep else None,
+                    resolved=frozenset({(1, ep + 36)}) if ep and ep <= 4 else frozenset(),
+                    matched=True,
+                )
+
+        monkeypatch.setattr(main, "sonarr_client", Sonarr())
+        files = [{"name": f"B/[rg] bookworm 4 0{e}.mkv"} for e in (1, 2, 3, 4)]
+        allowed = {(1, e) for e in range(37, 41)}
+        title = "Ascendance of a Bookworm S04 1080p WEBRip"
+        # Without Sonarr's view the planner still renumbers onto the grab...
+        assert (
+            "S04E37"
+            in _bases(validate_rename_plan(files, title, "B", allowed_episodes=allowed)[0])[
+                "[rg] bookworm 4 01.mkv"
+            ]
+        )
+        names = await main._enrich_file_names("sonarr", files, title, False, None, allowed)
+        assert (
+            names["b/[rg] bookworm 4 01.mkv"] == "Ascendance of a Bookworm S04E01 1080p WEBRip.mkv"
+        )
+
+    @pytest.mark.asyncio
+    async def test_wrong_indexer_map_loses_to_own_numbering(self, monkeypatch):
+        # ukr-torznab mapped "Gundam SEED HD Remaster - 01" to S00E02 (a compilation
+        # special); Sonarr grabbed S01. The file's own number lands in the grab.
+        from src import main
+        from src.arrapi import ParseResult
+
+        class Sonarr:
+            async def parse_title(self, name):
+                m = re.search(r"S(\d\d)E(\d\d)", name)
+                key = (int(m.group(1)), int(m.group(2))) if m else None
+                return ParseResult(
+                    title=name,
+                    custom_format_score=0,
+                    custom_formats=[],
+                    parsed_title=None,
+                    quality="Bluray-1080p",
+                    episodes=(key[0], (key[1],), ()) if key else None,
+                    resolved=frozenset({key}) if key else frozenset(),
+                    matched=True,
+                )
+
+        monkeypatch.setattr(main, "sonarr_client", Sonarr())
+        files = [{"name": f"G/Gundam SEED HD Remaster - 0{e} (BDRip).mkv"} for e in (1, 2)]
+        title = "Mobile Suit Gundam SEED S01 1080p BluRay"
+        wrong_map = {
+            f"g/gundam seed hd remaster - 0{e} (bdrip).mkv": f"{title.replace('S01', f'S00E0{e + 1}')}.mkv"
+            for e in (1, 2)
+        }
+        names = await main._enrich_file_names(
+            "sonarr", files, title, False, wrong_map, {(1, 1), (1, 2)}
+        )
+        assert names["g/gundam seed hd remaster - 01 (bdrip).mkv"] == (
+            "Mobile Suit Gundam SEED S01E01 1080p BluRay.mkv"
+        )

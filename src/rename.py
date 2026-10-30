@@ -740,6 +740,15 @@ SEASON_EPISODE_RANGE_PATTERN = re.compile(
 # Unicode dashes: regular hyphen (-), en-dash (–), em-dash (—)
 DASHES = r"\-\u2013\u2014"
 
+# A file that is NOT a regular episode although it carries one's number: a
+# recap/special numbered between episodes ("- 05.5", "s01e2.5", "01.5 (special)")
+# or a numbered special ("S01SP01", "SP02"). Read naively it takes the real
+# episode's number ("05.5" -> E05) and collides with it, so it keeps its name.
+NON_EPISODE_PATTERN = re.compile(
+    r"(?<![\d.])\d{1,4}\.5(?!\d)|(?<![A-Za-z])(?:S\d{1,2}[\s_.]*)?SP\s?\d{1,3}(?!\d)",
+    re.IGNORECASE,
+)
+
 # Alternative episode patterns for anime and other formats
 # These patterns extract just the episode number (no season)
 ALTERNATIVE_EPISODE_PATTERNS = [
@@ -747,6 +756,8 @@ ALTERNATIVE_EPISODE_PATTERNS = [
     re.compile(rf"[\s{DASHES}_][{DASHES}]\s*(\d{{1,4}})(?:\s|\.|\)|$|\[)", re.IGNORECASE),
     # Episode marker: "Episode 10", "Ep 05", "EP10", "Ep.10"
     re.compile(r"\b(?:Episode|Ep)[\.\s]*(\d{1,4})\b", re.IGNORECASE),
+    # Number before the marker: "4ep Umayuru", "1 ep ...", "3 серія"
+    re.compile(r"(?<![\w.])(\d{1,4})\s?(?:ep|серія|серия)\b", re.IGNORECASE),
     # Hash number: "#10", "# 05"
     re.compile(r"#\s*(\d{1,4})\b"),
     # "X of Y" or "X з Y" (Ukrainian) or "X из Y" (Russian) pattern: [12 з 12], [5 of 10]
@@ -1187,7 +1198,7 @@ def _heuristic_plan(
     # Structure-aware handling for complex packs (multi-season / season+specials
     # / collection). Imported lazily to avoid a circular import (structure
     # builds on this module's episode helpers).
-    from .structure import LayoutKind, analyze_torrent, build_complex_plan
+    from .structure import LayoutKind, analyze_torrent, build_complex_plan, small_duplicates
 
     layout = analyze_torrent(files)
     # A season-range title ("S01-S02") is a multi-season pack even when the files
@@ -1223,7 +1234,12 @@ def _heuristic_plan(
         return bool(BRACKETED_EPISODE_PATTERN.search(name) or EPISODE_PATTERN.search(name))
 
     names = {f.get("name", ""): f.get("name", "").rsplit("/", 1)[-1] for f in files}
-    seasonless = [n for n in names.values() if not has_season_episode(n)]
+    # "05.5" / "S01SP01" next to real episodes keep their names (and stay out of
+    # the batch, where "05.5" would cancel out the real "05").
+    non_episode = (
+        {n for n in names.values() if NON_EPISODE_PATTERN.search(n)} if len(names) > 1 else set()
+    )
+    seasonless = [n for n in names.values() if not has_season_episode(n) and n not in non_episode]
 
     # Season-less files are read as a batch: a sequence consistent across the
     # whole pack beats a per-file guess that grabs a stray number from an episode
@@ -1244,6 +1260,9 @@ def _heuristic_plan(
     for f in files:
         old_path = f.get("name", "")
         filename = names[old_path]
+        if filename in non_episode:
+            rename_plan.append((old_path, old_path))
+            continue
 
         # Try to get episode info from various sources (never for movies).
         episode_info = None
@@ -1277,6 +1296,17 @@ def _heuristic_plan(
         if new_path not in new_paths:
             new_paths[new_path] = []
         new_paths[new_path].append(old_path)
+
+    # Shorts/previews numbered like the episodes they sit next to keep their names.
+    claims = {
+        old: (int(m.group(1)), int(m.group(3)))
+        for old, new in rename_plan
+        if old != new and (m := EPISODE_PATTERN.search(new.rsplit("/", 1)[-1]))
+    }
+    small = small_duplicates(claims, {f.get("name", ""): f.get("size") or 0 for f in files})
+    if small:
+        rename_plan = [(o, o if o in small else n) for o, n in rename_plan]
+        new_paths = {k: [o for o in v if o not in small] for k, v in new_paths.items()}
 
     # Check for conflicts (multiple files -> same target)
     conflicts = {k: v for k, v in new_paths.items() if len(v) > 1}
