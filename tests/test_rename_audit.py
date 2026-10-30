@@ -148,6 +148,33 @@ class TestPlanner:
         )
         assert names["Sab S03E28 WEBRip-grp.mkv"] == "Sab S03E28 WEBRip-grp.mkv"
 
+    def test_indexer_map_shifted_onto_grabbed_season(self):
+        # The tracker's "S03" chapters 21-28 are what Sonarr grabbed as TVDB S02E01-08.
+        files = [{"name": f"Sab S03/Sab S03E{i}.mkv"} for i in range(21, 29)]
+        names_map = {
+            f"sab s03/sab s03e{i}.mkv": f"Sab S03E{i} WEBRip-grp.mkv" for i in range(21, 29)
+        }
+        allowed = {(2, e) for e in range(1, 9)}
+        names = _bases(
+            validate_rename_plan(
+                files,
+                "Sab S03 WEBRip-grp",
+                "Sab S03",
+                file_names=names_map,
+                allowed_episodes=allowed,
+            )[0]
+        )
+        assert names["Sab S03E21.mkv"] == "Sab S02E01 WEBRip-grp.mkv"
+        assert names["Sab S03E28.mkv"] == "Sab S02E08 WEBRip-grp.mkv"
+        # When the map agrees with the grab it is used as is.
+        agree = {(3, e) for e in range(21, 29)}
+        names = _bases(
+            validate_rename_plan(
+                files, "Sab S03 WEBRip-grp", "Sab S03", file_names=names_map, allowed_episodes=agree
+            )[0]
+        )
+        assert names["Sab S03E21.mkv"] == "Sab S03E21 WEBRip-grp.mkv"
+
     def test_indexer_file_map_wins(self):
         files = [
             {"name": "Pack/ep13 ova.mkv"},

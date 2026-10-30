@@ -1154,13 +1154,19 @@ def validate_rename_plan(
     # module's episode helpers).
     from .structure import VIDEO_EXTS, build_mapped_plan
 
+    videos = [f for f in files if f.get("name", "").lower().endswith(VIDEO_EXTS)]
     if file_names:
         mapped = build_mapped_plan(files, new_name, root_folder, preserve_folder, file_names)
         if mapped is not None:
-            return mapped
+            # The indexer's numbering can disagree with Sonarr's wholesale.
+            shifted = (
+                _shift_onto_grabbed(mapped[0], allowed_episodes)
+                if allowed_episodes and len(videos) > 1
+                else None
+            )
+            return (shifted, mapped[1]) if shifted else mapped
 
     plan, warnings = _heuristic_plan(files, new_name, root_folder, preserve_folder, movie)
-    videos = [f for f in files if f.get("name", "").lower().endswith(VIDEO_EXTS)]
     if allowed_episodes and len(videos) > 1:
         plan, reverted = keep_grabbed_episodes(plan, allowed_episodes)
         warnings += [
@@ -1329,12 +1335,13 @@ def keep_grabbed_episodes(
 def _shift_onto_grabbed(
     plan: list[tuple[str, str]], allowed: set[tuple[int, int]]
 ) -> list[tuple[str, str]] | None:
-    """Renumber a chapter-numbered pack onto the episodes Sonarr grabbed.
+    """Renumber a pack whose numbering disagrees with the episodes Sonarr grabbed.
 
-    Some seasons number episodes continuously ("Sabrina S03E21-28" is TVDB
-    S03E01-08). Only when no file names a grabbed episode, all share one season,
-    and the file numbers form one run exactly as long as the grabbed run is the
-    offset unambiguous; otherwise ``None``.
+    Some releases number a season continuously or by the tracker's season
+    ("Sabrina S03E21-28" is what Sonarr grabbed as TVDB S02E01-08). Only when
+    no file names a grabbed episode, the files and the grab each sit in one
+    season, and both are one unbroken run of the same length is the mapping
+    unambiguous; otherwise ``None``.
     """
     found = [
         (i, m)
@@ -1343,11 +1350,12 @@ def _shift_onto_grabbed(
     ]
     keys = {(int(m.group(1)), int(m.group(3))) for _, m in found}
     seasons = {s for s, _ in keys}
-    if not found or keys & allowed or len(seasons) != 1:
+    targets = {s for s, _ in allowed}
+    if not found or keys & allowed or len(seasons) != 1 or len(targets) != 1:
         return None
-    season = seasons.pop()
+    season = targets.pop()
     have = sorted(e for _, e in keys)
-    want = sorted(e for s, e in allowed if s == season)
+    want = sorted(e for _, e in allowed)
 
     def is_run(xs: list[int]) -> bool:
         return bool(xs) and xs == list(range(xs[0], xs[0] + len(xs)))
